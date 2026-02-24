@@ -177,15 +177,31 @@ class Executor:
             )
 
         try:
-            # Merge step args with context
-            args = {**step.tool_args, "_context": context}
-            output = await tool.execute(**args)
-            return ActionResult(
-                success=True,
-                output=str(output),
-                action_type="tool_call",
-                tool_name=tool_name,
-            )
+            # Merge step args with context (exclude internal keys)
+            args = {**step.tool_args}
+
+            # Execute the tool and handle ToolResult
+            from sovereign.tools.base import ToolResult as ToolResultType
+
+            result = await tool.execute(**args)
+
+            # If the tool returns a ToolResult, extract its fields
+            if isinstance(result, ToolResultType):
+                return ActionResult(
+                    success=result.success,
+                    output=str(result.output) if result.output else "",
+                    error=result.error,
+                    action_type="tool_call",
+                    tool_name=tool_name,
+                    metadata=result.metadata,
+                )
+            else:
+                return ActionResult(
+                    success=True,
+                    output=str(result),
+                    action_type="tool_call",
+                    tool_name=tool_name,
+                )
         except Exception as e:
             return ActionResult(
                 success=False,

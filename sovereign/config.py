@@ -173,5 +173,23 @@ def load_config(**overrides: Any) -> SovereignConfig:
         if not anthropic_key:
             config.llm.default_model = "gpt4"
 
+    # Auto-configure Ollama if available (no API key needed)
+    if "ollama" not in config.llm.models:
+        config.llm.models["ollama"] = LLMModelConfig(
+            provider=LLMProviderType.OLLAMA,
+            model_name="llama3",
+            api_key="",
+            base_url="http://localhost:11434",
+            max_tokens=4096,
+            temperature=0.7,
+            cost_per_1k_input=0.0,
+            cost_per_1k_output=0.0,
+            capabilities=["general", "coding", "analysis"],
+            max_context_window=8192,
+        )
+        # If no cloud API keys, default to Ollama
+        if not anthropic_key and not openai_key:
+            config.llm.default_model = "ollama"
+
     config.ensure_dirs()
     return config

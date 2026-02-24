@@ -20,6 +20,7 @@ from sovereign.core.executor import ActionResult, Executor
 from sovereign.core.planner import Plan, Planner, StepStatus
 from sovereign.core.reasoning import ReasoningEngine, Reflection
 from sovereign.llm.router import ModelRouter
+from sovereign.tools.registry import ToolRegistry
 
 
 class AgentRole(str, Enum):
@@ -108,15 +109,84 @@ class Agent:
         # Initialize LLM router for real AI-powered planning/reasoning
         self.llm_router = ModelRouter(config)
 
+        # Initialize and register all real tools
+        self.tool_registry = ToolRegistry()
+        self._register_all_tools()
+
         self.planner = Planner(config, llm_router=self.llm_router)
         self.reasoning = ReasoningEngine(config, llm_router=self.llm_router)
         self.executor = Executor(config, llm_router=self.llm_router)
+        self.executor.register_tools(
+            {name: tool for name, tool in self.tool_registry._tools.items()}
+        )
 
         self._message_queue: asyncio.Queue[AgentMessage] = asyncio.Queue()
         self._current_task: TaskContext | None = None
         self._current_plan: Plan | None = None
         self._execution_history: list[ActionResult] = []
         self._reflections: list[Reflection] = []
+        self._stream_callback: Any = None  # For streaming output
+
+    def _register_all_tools(self) -> None:
+        """Register all real tools so the agent can actually use them."""
+        # Core tools (always available)
+        from sovereign.tools.api_client import APIClientTool
+        from sovereign.tools.browser import BrowserTool
+        from sovereign.tools.code_executor import CodeExecutorTool
+        from sovereign.tools.email_client import EmailSendTool
+        from sovereign.tools.file_manager import FileListTool, FileReadTool, FileWriteTool
+        from sovereign.tools.shell import ShellTool
+        from sovereign.tools.web_search import WebSearchTool
+
+        self.tool_registry.register(ShellTool())
+        self.tool_registry.register(FileReadTool())
+        self.tool_registry.register(FileWriteTool())
+        self.tool_registry.register(FileListTool())
+        self.tool_registry.register(WebSearchTool())
+        self.tool_registry.register(BrowserTool())
+        self.tool_registry.register(APIClientTool())
+        self.tool_registry.register(CodeExecutorTool())
+        self.tool_registry.register(EmailSendTool(
+            smtp_host=self.config.channels.email_smtp_host,
+            smtp_port=self.config.channels.email_smtp_port,
+            username=self.config.channels.email_username,
+            password=self.config.channels.email_password,
+        ))
+
+        # Communication tools (Twilio)
+        from sovereign.tools.twilio_tool import SMSSendTool, VoiceCallTool, WhatsAppTool
+
+        self.tool_registry.register(SMSSendTool())
+        self.tool_registry.register(VoiceCallTool())
+        self.tool_registry.register(WhatsAppTool())
+
+        # Business tools
+        from sovereign.tools.crm import (
+            CRMAddLeadTool,
+            CRMListLeadsTool,
+            CRMLogInteractionTool,
+            CRMUpdateStageTool,
+        )
+        from sovereign.tools.invoice import InvoiceGenerateTool, PaymentLinkTool
+        from sovereign.tools.lead_scraper import LeadScraperTool
+        from sovereign.tools.website_builder import (
+            WebsiteDeployTool,
+            WebsiteGeneratorTool,
+        )
+
+        self.tool_registry.register(LeadScraperTool())
+        self.tool_registry.register(CRMAddLeadTool())
+        self.tool_registry.register(CRMUpdateStageTool())
+        self.tool_registry.register(CRMListLeadsTool())
+        self.tool_registry.register(CRMLogInteractionTool())
+        self.tool_registry.register(InvoiceGenerateTool())
+        self.tool_registry.register(PaymentLinkTool())
+        self.tool_registry.register(WebsiteGeneratorTool())
+        self.tool_registry.register(WebsiteDeployTool())
+
+    def set_stream_callback(self, callback: Any) -> None:
+        """Set a callback for streaming agent output in real-time."""
+        self._stream_callback = callback
 
     @property
     def is_busy(self) -> bool:
@@ -149,6 +219,10 @@ class Agent:
             max_replans = 3
             replan_count = 0
 
+            await self._emit(f"[PLAN] {len(plan.steps)} steps generated")
+            for i, s in enumerate(plan.steps, 1):
+                await self._emit(f"  {i}. [{s.step_type.value}] {s.description}")
+
             while not plan.is_complete and replan_count <= max_replans:
                 current_step = plan.get_next_step()
                 if current_step is None:
@@ -156,6 +230,12 @@ class Agent:
 
                 # Execute step
                 self.state = AgentState.EXECUTING
+                step_idx = plan.steps.index(current_step) + 1
+                await self._emit(
+                    f"\n[STEP {step_idx}/{len(plan.steps)}] "
+                    f"{current_step.step_type.value}: {current_step.description}"
+                )
+
                 result = await self.executor.execute_step(
                     step=current_step,
                     context=self._build_context(task),
@@ -166,9 +246,11 @@ class Agent:
                 if result.success:
                     current_step.status = StepStatus.COMPLETED
                     current_step.output = result.output
+                    await self._emit(f"  -> OK: {(result.output or '')[:200]}")
                 else:
                     current_step.status = StepStatus.FAILED
                     current_step.error = result.error
+                    await self._emit(f"  -> FAILED: {result.error}")
 
                 # Phase 3: Reflect on progress
                 self.state = AgentState.REFLECTING
@@ -179,10 +261,15 @@ class Agent:
                     history=self._execution_history,
                 )
                 self._reflections.append(reflection)
+                await self._emit(
+                    f"  [REFLECT] Progress: {reflection.goal_progress:.0%} | "
+                    f"Confidence: {reflection.confidence:.0%}"
+                )
 
                 # Phase 4: Decide whether to replan
                 if reflection.should_replan and replan_count < max_replans:
                     self.state = AgentState.PLANNING
+                    await self._emit("  [REPLAN] Adjusting strategy...")
                     plan = await self.planner.replan(
                         original_plan=plan,
                         reflection=reflection,
@@ -193,6 +280,7 @@ class Agent:
                     replan_count += 1
                 elif reflection.should_abort:
                     self.state = AgentState.FAILED
+                    await self._emit("[ABORT] Agent is aborting task.")
                     return ActionResult(
                         success=False,
                         output="",
@@ -259,6 +347,11 @@ class Agent:
             "reflections": [r.model_dump() for r in self._reflections[-5:]],
             "capabilities": [c.model_dump() for c in self.capabilities],
         }
+
+    async def _emit(self, message: str) -> None:
+        """Emit a streaming message to the callback if set."""
+        if self._stream_callback:
+            self._stream_callback(message)
 
     def _compile_results(self) -> str:
         """Compile all execution results into a final summary."""
