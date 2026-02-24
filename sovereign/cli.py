@@ -301,6 +301,160 @@ def dashboard(config: str | None) -> None:
 
 
 @main.command()
+@click.argument("goal")
+@click.option("--budget", "-b", default=None, type=float, help="Budget limit in USD")
+@click.option("--priority", "-p", default=5, type=int, help="Task priority (1-10)")
+@click.option("--strategy", "-s", default=None, help="Execution strategy: sequential, parallel, map_reduce")
+@click.option("--config", "-c", default=None, help="Path to config file")
+def orchestrate(
+    goal: str,
+    budget: float | None,
+    priority: int,
+    strategy: str | None,
+    config: str | None,
+) -> None:
+    """Execute a goal using multi-agent orchestration.
+
+    Decomposes the goal into sub-tasks and delegates to specialized agents
+    (Researcher, Coder, Marketer, Analyst, Outreach, Operator) that
+    collaborate via shared memory.
+
+    Examples:
+        sovereign orchestrate "Research competitors and create a marketing plan"
+        sovereign orchestrate "Build a landing page and find 50 leads" --budget 10.0
+        sovereign orchestrate "Analyze our revenue data" --strategy parallel
+    """
+    cfg = get_config(config)
+
+    console.print(
+        Panel(
+            f"[bold]Goal:[/bold] {goal}\n"
+            f"[bold]Budget:[/bold] ${budget:.2f if budget else 'unlimited'}\n"
+            f"[bold]Priority:[/bold] {priority}\n"
+            f"[bold]Strategy:[/bold] {strategy or 'auto (LLM decides)'}\n"
+            f"[bold]Mode:[/bold] Multi-Agent Orchestration",
+            title="[cyan]Orchestrator[/cyan]",
+            border_style="cyan",
+        )
+    )
+
+    async def _orchestrate() -> None:
+        from sovereign.agents import (
+            AnalystAgent,
+            CoderAgent,
+            DirectorAgent,
+            MarketerAgent,
+            OperatorAgent,
+            OutreachAgent,
+            ResearcherAgent,
+        )
+        from sovereign.core.orchestrator import Orchestrator
+        from sovereign.llm.router import ModelRouter
+
+        # Set up streaming callback for real-time output
+        def stream_callback(message: str) -> None:
+            if message.startswith("[ORCHESTRATOR]"):
+                console.print(f"[bold cyan]{message}[/bold cyan]")
+            elif message.startswith("[DELEGATE"):
+                console.print(f"[bold magenta]{message}[/bold magenta]")
+            elif "[REASSIGN]" in message:
+                console.print(f"[bold yellow]{message}[/bold yellow]")
+            elif "[OK]" in message:
+                console.print(f"[green]{message}[/green]")
+            elif "[FAILED]" in message:
+                console.print(f"[red]{message}[/red]")
+            elif "[WARN]" in message:
+                console.print(f"[yellow]{message}[/yellow]")
+            elif message.startswith("[PLAN]"):
+                console.print(f"[bold cyan]{message}[/bold cyan]")
+            elif message.startswith("[STEP"):
+                console.print(f"[bold yellow]{message}[/bold yellow]")
+            elif message.startswith("  -> OK:"):
+                console.print(f"[green]{message}[/green]")
+            elif message.startswith("  -> FAILED:"):
+                console.print(f"[red]{message}[/red]")
+            elif "[REFLECT]" in message:
+                console.print(f"[dim]{message}[/dim]")
+            elif "[REPLAN]" in message:
+                console.print(f"[bold magenta]{message}[/bold magenta]")
+            elif "[ABORT]" in message:
+                console.print(f"[bold red]{message}[/bold red]")
+            else:
+                console.print(message)
+
+        # Create orchestrator
+        orchestrator = Orchestrator(cfg)
+        orchestrator.set_stream_callback(stream_callback)
+
+        # Wire LLM router for intelligent decomposition
+        llm_router = ModelRouter(cfg)
+        orchestrator.set_llm_router(llm_router)
+
+        # Register all specialized agents
+        agents = [
+            DirectorAgent(cfg),
+            ResearcherAgent(cfg),
+            CoderAgent(cfg),
+            MarketerAgent(cfg),
+            AnalystAgent(cfg),
+            OutreachAgent(cfg),
+            OperatorAgent(cfg),
+        ]
+        for agent_instance in agents:
+            agent_instance.set_stream_callback(stream_callback)
+            orchestrator.register_agent(agent_instance)
+
+        console.print(
+            f"[dim]Registered {len(agents)} specialized agents[/dim]"
+        )
+
+        # Execute the goal
+        result = await orchestrator.execute_goal(
+            goal=goal,
+            budget_usd=budget,
+            priority=priority,
+        )
+
+        # Save lesson to self-improvement memory
+        from sovereign.core.self_improve import record_outcome
+        record_outcome(
+            goal=goal,
+            success=result.success,
+            output=result.output or "",
+            error=result.error,
+            steps_executed=result.metadata.get("total_sub_tasks", 0),
+        )
+
+        if result.success:
+            console.print(
+                Panel(
+                    f"[green]{result.output or 'Goal completed successfully'}[/green]",
+                    title="[green]Orchestration Complete[/green]",
+                    border_style="green",
+                )
+            )
+        else:
+            console.print(
+                Panel(
+                    f"[red]{result.error or 'Orchestration failed'}[/red]",
+                    title="[red]Orchestration Failed[/red]",
+                    border_style="red",
+                )
+            )
+
+        # Print orchestrator state
+        state = orchestrator.get_state()
+        console.print(
+            f"\n[dim]Tasks completed: {state.total_tasks_completed} | "
+            f"Failed: {state.total_tasks_failed} | "
+            f"Messages: {state.messages_exchanged} | "
+            f"Shared memory entries: {len(orchestrator.shared_memory.entries)}[/dim]"
+        )
+
+    asyncio.run(_orchestrate())
+
+
+@main.command()
 @click.option("--config", "-c", default=None, help="Path to config file")
 def init(config: str | None) -> None:
     """Initialize a new Sovereign workspace."""

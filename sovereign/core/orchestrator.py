@@ -1,17 +1,21 @@
 """Multi-Agent Orchestrator - the Director that coordinates specialized agents.
 
 This is Sovereign's key differentiator over OpenClaw and Manus:
-- Hierarchical task decomposition and delegation
+- LLM-powered goal decomposition into sub-tasks
 - Specialized agent routing based on capabilities
 - Parallel agent execution with result aggregation
-- Inter-agent communication and collaboration
+- Inter-agent communication via shared memory and message bus
 - Dynamic agent spawning based on workload
+- Real delegation: sub-agents actually plan, reason, and execute
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
+from datetime import datetime, timezone
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -23,15 +27,6 @@ from sovereign.core.agent import (
     TaskContext,
 )
 from sovereign.core.executor import ActionResult
-
-
-class TaskDecomposition(BaseModel):
-    """A goal decomposed into sub-tasks for different agents."""
-
-    original_goal: str
-    sub_tasks: list[SubTask] = Field(default_factory=list)
-    dependencies: dict[str, list[str]] = Field(default_factory=dict)  # task_id -> [dep_task_ids]
-    aggregation_strategy: str = "sequential"  # sequential, parallel, map_reduce
 
 
 class SubTask(BaseModel):
@@ -48,6 +43,78 @@ class SubTask(BaseModel):
     result: ActionResult | None = None
 
 
+class TaskDecomposition(BaseModel):
+    """A goal decomposed into sub-tasks for different agents."""
+
+    original_goal: str
+    sub_tasks: list[SubTask] = Field(default_factory=list)
+    dependencies: dict[str, list[str]] = Field(default_factory=dict)
+    aggregation_strategy: str = "sequential"  # sequential, parallel, map_reduce
+    rationale: str = ""
+
+
+class SharedMemoryEntry(BaseModel):
+    """A single entry in shared memory."""
+
+    value: str
+    author: str
+    tags: list[str] = Field(default_factory=list)
+    timestamp: str = ""
+
+
+class SharedMemory(BaseModel):
+    """Shared memory space for inter-agent collaboration.
+
+    Agents can read/write to this shared context so that outputs
+    from one agent are available to others without explicit passing.
+    """
+
+    entries: dict[str, SharedMemoryEntry] = Field(default_factory=dict)
+
+    def write(
+        self,
+        key: str,
+        value: str,
+        author: str,
+        tags: list[str] | None = None,
+    ) -> None:
+        """Write a value to shared memory."""
+        self.entries[key] = SharedMemoryEntry(
+            value=value,
+            author=author,
+            tags=tags or [],
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    def read(self, key: str) -> str | None:
+        """Read a value from shared memory."""
+        entry = self.entries.get(key)
+        return entry.value if entry else None
+
+    def search(self, tag: str) -> list[tuple[str, str]]:
+        """Search entries by tag. Returns list of (key, value) tuples."""
+        results = []
+        for key, entry in self.entries.items():
+            if tag in entry.tags:
+                results.append((key, entry.value))
+        return results
+
+    def get_context_summary(self, max_entries: int = 10) -> str:
+        """Get a summary of recent shared memory for agent context."""
+        sorted_entries = sorted(
+            self.entries.items(),
+            key=lambda x: x[1].timestamp,
+            reverse=True,
+        )[:max_entries]
+        if not sorted_entries:
+            return "No shared context available."
+        lines = []
+        for key, entry in sorted_entries:
+            preview = entry.value[:200]
+            lines.append(f"[{entry.author}] {key}: {preview}")
+        return "\n".join(lines)
+
+
 class OrchestratorState(BaseModel):
     """Current state of the orchestrator."""
 
@@ -57,16 +124,17 @@ class OrchestratorState(BaseModel):
     total_tasks_completed: int = 0
     total_tasks_failed: int = 0
     budget_spent_usd: float = 0.0
+    messages_exchanged: int = 0
 
 
 class Orchestrator:
     """Multi-agent orchestrator that decomposes goals and coordinates agents.
 
     The Orchestrator acts as the Director agent. When given a high-level goal:
-    1. Decomposes it into sub-tasks
+    1. Uses LLM to decompose it into sub-tasks with rationale
     2. Routes each sub-task to the best specialized agent
-    3. Manages inter-agent communication
-    4. Aggregates results
+    3. Manages inter-agent communication via shared memory
+    4. Aggregates results with LLM-powered synthesis
     5. Handles failures with reassignment or escalation
     """
 
@@ -76,7 +144,19 @@ class Orchestrator:
         self._role_agents: dict[AgentRole, list[str]] = {}
         self._active_tasks: dict[str, TaskDecomposition] = {}
         self._message_bus: asyncio.Queue[AgentMessage] = asyncio.Queue()
+        self._message_log: list[AgentMessage] = []
         self._state = OrchestratorState()
+        self._shared_memory = SharedMemory()
+        self._stream_callback: Any = None
+        self._llm_router: Any = None
+
+    def set_llm_router(self, router: Any) -> None:
+        """Set the LLM router for intelligent decomposition."""
+        self._llm_router = router
+
+    def set_stream_callback(self, callback: Any) -> None:
+        """Set callback for streaming orchestrator output."""
+        self._stream_callback = callback
 
     def register_agent(self, agent: Agent) -> None:
         """Register an agent with the orchestrator."""
@@ -93,6 +173,11 @@ class Orchestrator:
                 aid for aid in self._role_agents[agent.role] if aid != agent_id
             ]
 
+    @property
+    def shared_memory(self) -> SharedMemory:
+        """Access shared memory for inter-agent communication."""
+        return self._shared_memory
+
     async def execute_goal(
         self,
         goal: str,
@@ -100,17 +185,30 @@ class Orchestrator:
         budget_usd: float | None = None,
         priority: int = 5,
     ) -> ActionResult:
-        """Execute a high-level goal by decomposing and delegating to agents.
-
-        This is the main entry point for the orchestrator.
-        """
+        """Execute a high-level goal by decomposing and delegating to agents."""
         constraints = constraints or []
 
-        # Step 1: Decompose the goal into sub-tasks
+        await self._emit(f"\n[ORCHESTRATOR] Received goal: {goal}")
+        await self._emit(f"[ORCHESTRATOR] {len(self._agents)} agents registered")
+
+        # Step 1: Decompose the goal into sub-tasks using LLM
+        await self._emit("[ORCHESTRATOR] Decomposing goal into sub-tasks...")
         decomposition = await self._decompose_goal(goal, constraints)
         task_id = str(uuid.uuid4())
         self._active_tasks[task_id] = decomposition
         self._state.active_tasks += 1
+
+        await self._emit(
+            f"[ORCHESTRATOR] Strategy: {decomposition.aggregation_strategy}"
+        )
+        if decomposition.rationale:
+            await self._emit(
+                f"[ORCHESTRATOR] Rationale: {decomposition.rationale[:200]}"
+            )
+        for i, st in enumerate(decomposition.sub_tasks, 1):
+            await self._emit(
+                f"  {i}. [{st.assigned_role.value}] {st.description}"
+            )
 
         try:
             # Step 2: Execute based on aggregation strategy
@@ -121,10 +219,12 @@ class Orchestrator:
             else:
                 results = await self._execute_sequential(decomposition, budget_usd)
 
-            # Step 3: Aggregate results
-            final_result = self._aggregate_results(results, goal)
+            # Step 3: Aggregate results using LLM synthesis
+            await self._emit("\n[ORCHESTRATOR] Synthesizing results...")
+            final_result = await self._aggregate_results(results, goal)
 
             self._state.total_tasks_completed += 1
+            await self._emit("[ORCHESTRATOR] Goal complete.")
             return final_result
 
         except Exception as e:
@@ -144,95 +244,212 @@ class Orchestrator:
         goal: str,
         constraints: list[str],
     ) -> TaskDecomposition:
-        """Decompose a high-level goal into sub-tasks for different agents.
+        """Decompose a goal. Uses LLM if available, else keywords."""
+        if self._llm_router:
+            try:
+                return await self._decompose_with_llm(goal, constraints)
+            except Exception:
+                pass
+        return self._decompose_with_keywords(goal, constraints)
 
-        Uses the LLM to analyze the goal and determine:
-        1. What sub-tasks are needed
-        2. Which agent role should handle each
-        3. What dependencies exist between sub-tasks
-        4. Whether tasks can run in parallel
-        """
-        # Analyze the goal to determine required capabilities
+    async def _decompose_with_llm(
+        self,
+        goal: str,
+        constraints: list[str],
+    ) -> TaskDecomposition:
+        """Use LLM to intelligently decompose a goal into sub-tasks."""
+        from sovereign.llm.provider import Message, MessageRole
+
+        available_roles = list(
+            set(r.value for r in self._role_agents.keys()) | {"general"}
+        )
+
+        memory_context = self._shared_memory.get_context_summary(5)
+
+        system_prompt = (
+            "You are the Director of an autonomous AI agent team called Sovereign. "
+            "Given a high-level goal, decompose it into sub-tasks for specialized agents.\n\n"
+            f"Available agent roles: {', '.join(available_roles)}\n\n"
+            "Respond with a JSON object:\n"
+            '{\n'
+            '  "rationale": "Why you chose this decomposition",\n'
+            '  "strategy": "sequential" or "parallel" or "map_reduce",\n'
+            '  "sub_tasks": [\n'
+            '    {\n'
+            '      "description": "What this agent should do",\n'
+            '      "role": "one of the available roles",\n'
+            '      "priority": 1-10,\n'
+            '      "complexity": 0.0-1.0,\n'
+            '      "depends_on": []\n'
+            '    }\n'
+            '  ]\n'
+            '}\n\n'
+            "Rules:\n"
+            "- Break complex goals into 2-6 sub-tasks\n"
+            "- Use the most specific role for each task\n"
+            "- Use 'sequential' if tasks depend on each other\n"
+            "- Use 'parallel' if all tasks are independent\n"
+            "- Use 'map_reduce' if tasks produce data that needs synthesis\n"
+            "Respond ONLY with valid JSON. No markdown, no explanation."
+        )
+
+        user_content = f"GOAL: {goal}"
+        if constraints:
+            user_content += f"\nCONSTRAINTS: {', '.join(constraints)}"
+        if memory_context != "No shared context available.":
+            user_content += f"\nSHARED CONTEXT:\n{memory_context}"
+
+        messages = [
+            Message(role=MessageRole.SYSTEM, content=system_prompt),
+            Message(role=MessageRole.USER, content=user_content),
+        ]
+
+        response = await self._llm_router.generate(
+            messages=messages,
+            temperature=0.5,
+            max_tokens=1024,
+        )
+
+        return self._parse_decomposition(response.content, goal)
+
+    def _parse_decomposition(self, content: str, goal: str) -> TaskDecomposition:
+        """Parse LLM response into a TaskDecomposition."""
+        try:
+            text = content.strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+                if text.endswith("```"):
+                    text = text[:-3]
+                text = text.strip()
+            if text.startswith("json"):
+                text = text[4:].strip()
+
+            data = json.loads(text)
+
+            strategy = data.get("strategy", "sequential")
+            rationale = data.get("rationale", "")
+            raw_tasks = data.get("sub_tasks", [])
+
+            sub_tasks: list[SubTask] = []
+            dependencies: dict[str, list[str]] = {}
+
+            for raw in raw_tasks:
+                role_str = raw.get("role", "general")
+                try:
+                    role = AgentRole(role_str)
+                except ValueError:
+                    role = AgentRole.GENERAL
+
+                task = SubTask(
+                    description=raw.get("description", "Execute task"),
+                    assigned_role=role,
+                    priority=raw.get("priority", 5),
+                    estimated_complexity=raw.get("complexity", 0.5),
+                )
+
+                dep_indices = raw.get("depends_on", [])
+                if dep_indices and sub_tasks:
+                    dep_ids = []
+                    for idx in dep_indices:
+                        if isinstance(idx, int) and 0 <= idx < len(sub_tasks):
+                            dep_ids.append(sub_tasks[idx].id)
+                    if dep_ids:
+                        task.requires_output_from = dep_ids
+                        dependencies[task.id] = dep_ids
+
+                sub_tasks.append(task)
+
+            if not sub_tasks:
+                return self._decompose_with_keywords(goal, [])
+
+            return TaskDecomposition(
+                original_goal=goal,
+                sub_tasks=sub_tasks,
+                dependencies=dependencies,
+                aggregation_strategy=strategy,
+                rationale=rationale,
+            )
+
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return self._decompose_with_keywords(goal, [])
+
+    def _decompose_with_keywords(
+        self,
+        goal: str,
+        constraints: list[str],
+    ) -> TaskDecomposition:
+        """Fallback: decompose using keyword analysis."""
         required_roles = self._identify_required_roles(goal)
 
-        # Create sub-tasks based on analysis
         sub_tasks: list[SubTask] = []
         dependencies: dict[str, list[str]] = {}
 
-        # Research phase (if needed)
         if AgentRole.RESEARCHER in required_roles:
-            research_task = SubTask(
+            task = SubTask(
                 description=f"Research and gather information for: {goal}",
                 assigned_role=AgentRole.RESEARCHER,
                 priority=3,
                 estimated_complexity=0.4,
             )
-            sub_tasks.append(research_task)
+            sub_tasks.append(task)
 
-        # Analysis phase (if needed)
         if AgentRole.ANALYST in required_roles:
-            analysis_task = SubTask(
+            task = SubTask(
                 description=f"Analyze data and generate insights for: {goal}",
                 assigned_role=AgentRole.ANALYST,
                 priority=4,
                 estimated_complexity=0.5,
             )
-            # Analysis depends on research
             if sub_tasks:
-                analysis_task.requires_output_from = [sub_tasks[0].id]
-                dependencies[analysis_task.id] = [sub_tasks[0].id]
-            sub_tasks.append(analysis_task)
+                task.requires_output_from = [sub_tasks[0].id]
+                dependencies[task.id] = [sub_tasks[0].id]
+            sub_tasks.append(task)
 
-        # Implementation phase (if needed)
         if AgentRole.CODER in required_roles:
-            code_task = SubTask(
+            task = SubTask(
                 description=f"Implement technical solution for: {goal}",
                 assigned_role=AgentRole.CODER,
                 priority=5,
                 estimated_complexity=0.7,
             )
             if sub_tasks:
-                code_task.requires_output_from = [sub_tasks[-1].id]
-                dependencies[code_task.id] = [sub_tasks[-1].id]
-            sub_tasks.append(code_task)
+                task.requires_output_from = [sub_tasks[-1].id]
+                dependencies[task.id] = [sub_tasks[-1].id]
+            sub_tasks.append(task)
 
-        # Content/marketing phase (if needed)
         if AgentRole.MARKETER in required_roles:
-            marketing_task = SubTask(
+            task = SubTask(
                 description=f"Create content and marketing materials for: {goal}",
                 assigned_role=AgentRole.MARKETER,
                 priority=5,
                 estimated_complexity=0.5,
             )
-            sub_tasks.append(marketing_task)
+            sub_tasks.append(task)
 
-        # Outreach phase (if needed)
         if AgentRole.OUTREACH in required_roles:
-            outreach_task = SubTask(
+            task = SubTask(
                 description=f"Execute outreach and communication for: {goal}",
                 assigned_role=AgentRole.OUTREACH,
                 priority=6,
                 estimated_complexity=0.4,
             )
             if sub_tasks:
-                outreach_task.requires_output_from = [sub_tasks[-1].id]
-                dependencies[outreach_task.id] = [sub_tasks[-1].id]
-            sub_tasks.append(outreach_task)
+                task.requires_output_from = [sub_tasks[-1].id]
+                dependencies[task.id] = [sub_tasks[-1].id]
+            sub_tasks.append(task)
 
-        # Deployment/ops phase (if needed)
         if AgentRole.OPERATOR in required_roles:
-            ops_task = SubTask(
+            task = SubTask(
                 description=f"Deploy and operationalize: {goal}",
                 assigned_role=AgentRole.OPERATOR,
                 priority=7,
                 estimated_complexity=0.6,
             )
             if sub_tasks:
-                ops_task.requires_output_from = [sub_tasks[-1].id]
-                dependencies[ops_task.id] = [sub_tasks[-1].id]
-            sub_tasks.append(ops_task)
+                task.requires_output_from = [sub_tasks[-1].id]
+                dependencies[task.id] = [sub_tasks[-1].id]
+            sub_tasks.append(task)
 
-        # If no specific roles identified, create a general task
         if not sub_tasks:
             sub_tasks.append(
                 SubTask(
@@ -243,15 +460,15 @@ class Orchestrator:
                 )
             )
 
-        # Determine aggregation strategy
-        has_dependencies = bool(dependencies)
-        strategy = "sequential" if has_dependencies else "parallel"
+        has_deps = bool(dependencies)
+        strategy = "sequential" if has_deps else "parallel"
 
         return TaskDecomposition(
             original_goal=goal,
             sub_tasks=sub_tasks,
             dependencies=dependencies,
             aggregation_strategy=strategy,
+            rationale="Keyword-based decomposition",
         )
 
     async def _execute_sequential(
@@ -259,45 +476,77 @@ class Orchestrator:
         decomposition: TaskDecomposition,
         budget_usd: float | None,
     ) -> list[ActionResult]:
-        """Execute sub-tasks sequentially, passing outputs between them."""
+        """Execute sub-tasks sequentially, passing outputs via shared memory."""
         results: list[ActionResult] = []
-        accumulated_context: dict[str, str] = {}
 
-        for sub_task in decomposition.sub_tasks:
+        for i, sub_task in enumerate(decomposition.sub_tasks, 1):
+            await self._emit(
+                f"\n[DELEGATE {i}/{len(decomposition.sub_tasks)}] "
+                f"Assigning to {sub_task.assigned_role.value}: "
+                f"{sub_task.description[:100]}"
+            )
+
             agent = await self._assign_agent(sub_task)
             if not agent:
-                results.append(
-                    ActionResult(
-                        success=False,
-                        error=f"No agent available for role: {sub_task.assigned_role}",
-                        action_type="assignment_error",
-                    )
+                await self._emit(
+                    f"  [WARN] No agent for role {sub_task.assigned_role.value}, "
+                    "creating general agent"
                 )
-                continue
+                agent = Agent(config=self.config, role=AgentRole.GENERAL)
+                if self._stream_callback:
+                    agent.set_stream_callback(self._stream_callback)
+                self.register_agent(agent)
+                sub_task.assigned_agent_id = agent.id
 
-            # Build task context with outputs from dependencies
+            # Inject shared memory context into the task
+            shared_context = self._shared_memory.get_context_summary(5)
+            task_goal = sub_task.description
+            if shared_context != "No shared context available.":
+                task_goal += f"\n\nContext from other agents:\n{shared_context}"
+
             task = TaskContext(
-                goal=sub_task.description,
+                goal=task_goal,
                 priority=sub_task.priority,
                 budget_usd=budget_usd,
-                metadata={"accumulated_context": accumulated_context},
+                metadata={
+                    "orchestrator_task": True,
+                    "sub_task_id": sub_task.id,
+                },
             )
+
+            if self._stream_callback:
+                agent.set_stream_callback(self._stream_callback)
 
             result = await agent.run_task(task)
             sub_task.result = result
             sub_task.status = "completed" if result.success else "failed"
             results.append(result)
 
-            if result.success and result.output:
-                accumulated_context[sub_task.id] = result.output
+            # Store result in shared memory for other agents
+            self._shared_memory.write(
+                key=f"task_{i}_{sub_task.assigned_role.value}",
+                value=result.output or result.error or "No output",
+                author=agent.name,
+                tags=[sub_task.assigned_role.value, "result"],
+            )
+
+            await self._emit(
+                f"  [{'OK' if result.success else 'FAILED'}] "
+                f"{sub_task.assigned_role.value}: "
+                f"{(result.output or result.error or '')[:150]}"
+            )
 
             # If a task fails, try reassignment
             if not result.success:
-                reassigned_result = await self._try_reassignment(sub_task, task)
-                if reassigned_result:
-                    results[-1] = reassigned_result
-                    if reassigned_result.success and reassigned_result.output:
-                        accumulated_context[sub_task.id] = reassigned_result.output
+                reassigned = await self._try_reassignment(sub_task, task)
+                if reassigned and reassigned.success:
+                    results[-1] = reassigned
+                    self._shared_memory.write(
+                        key=f"task_{i}_{sub_task.assigned_role.value}",
+                        value=reassigned.output or "",
+                        author="reassigned_agent",
+                        tags=[sub_task.assigned_role.value, "result", "retry"],
+                    )
 
             agent.reset()
 
@@ -309,25 +558,56 @@ class Orchestrator:
         budget_usd: float | None,
     ) -> list[ActionResult]:
         """Execute independent sub-tasks in parallel."""
-        tasks = []
-        for sub_task in decomposition.sub_tasks:
+        await self._emit(
+            f"[ORCHESTRATOR] Running {len(decomposition.sub_tasks)} tasks in parallel"
+        )
+
+        async def _run_sub_task(sub_task: SubTask, idx: int) -> ActionResult:
             agent = await self._assign_agent(sub_task)
-            if agent:
-                task = TaskContext(
-                    goal=sub_task.description,
-                    priority=sub_task.priority,
-                    budget_usd=budget_usd,
-                )
-                tasks.append(agent.run_task(task))
-            else:
-                tasks.append(self._make_error_result(sub_task))
+            if not agent:
+                agent = Agent(config=self.config, role=AgentRole.GENERAL)
+                if self._stream_callback:
+                    agent.set_stream_callback(self._stream_callback)
+                self.register_agent(agent)
+                sub_task.assigned_agent_id = agent.id
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+            task = TaskContext(
+                goal=sub_task.description,
+                priority=sub_task.priority,
+                budget_usd=budget_usd,
+                metadata={
+                    "orchestrator_task": True,
+                    "sub_task_id": sub_task.id,
+                },
+            )
 
-        processed_results: list[ActionResult] = []
-        for i, result in enumerate(results):
+            if self._stream_callback:
+                agent.set_stream_callback(self._stream_callback)
+
+            result = await agent.run_task(task)
+            sub_task.result = result
+            sub_task.status = "completed" if result.success else "failed"
+
+            self._shared_memory.write(
+                key=f"parallel_{idx}_{sub_task.assigned_role.value}",
+                value=result.output or result.error or "No output",
+                author=agent.name,
+                tags=[sub_task.assigned_role.value, "result", "parallel"],
+            )
+
+            agent.reset()
+            return result
+
+        tasks = [
+            _run_sub_task(st, i)
+            for i, st in enumerate(decomposition.sub_tasks)
+        ]
+        results_raw = await asyncio.gather(*tasks, return_exceptions=True)
+
+        processed: list[ActionResult] = []
+        for result in results_raw:
             if isinstance(result, Exception):
-                processed_results.append(
+                processed.append(
                     ActionResult(
                         success=False,
                         error=str(result),
@@ -335,39 +615,77 @@ class Orchestrator:
                     )
                 )
             else:
-                processed_results.append(result)
-                decomposition.sub_tasks[i].result = result
-                decomposition.sub_tasks[i].status = (
-                    "completed" if result.success else "failed"
-                )
+                processed.append(result)
 
-        # Reset agents
-        for sub_task in decomposition.sub_tasks:
-            if sub_task.assigned_agent_id:
-                agent = self._agents.get(sub_task.assigned_agent_id)
-                if agent:
-                    agent.reset()
-
-        return processed_results
+        return processed
 
     async def _execute_map_reduce(
         self,
         decomposition: TaskDecomposition,
         budget_usd: float | None,
     ) -> list[ActionResult]:
-        """Execute in map-reduce pattern: parallel map, then sequential reduce."""
-        # Map phase: execute all tasks in parallel
+        """Map-reduce: parallel map, then LLM-powered reduce."""
         map_results = await self._execute_parallel(decomposition, budget_usd)
 
-        # Reduce phase: synthesize results
-        successful_outputs = [r.output for r in map_results if r.success and r.output]
+        successful_outputs = [
+            r.output for r in map_results if r.success and r.output
+        ]
+
+        if self._llm_router and successful_outputs:
+            try:
+                from sovereign.llm.provider import Message, MessageRole
+
+                messages = [
+                    Message(
+                        role=MessageRole.SYSTEM,
+                        content=(
+                            "You are synthesizing results from multiple AI agents. "
+                            "Combine their outputs into a coherent, comprehensive "
+                            "final result. Preserve key details from each."
+                        ),
+                    ),
+                    Message(
+                        role=MessageRole.USER,
+                        content=(
+                            f"Goal: {decomposition.original_goal}\n\n"
+                            "Agent outputs to synthesize:\n"
+                            + "\n---\n".join(
+                                f"Agent {i+1}:\n{out}"
+                                for i, out in enumerate(successful_outputs)
+                            )
+                        ),
+                    ),
+                ]
+
+                response = await self._llm_router.generate(
+                    messages=messages,
+                    temperature=0.5,
+                    max_tokens=2048,
+                )
+
+                reduce_result = ActionResult(
+                    success=True,
+                    output=response.content,
+                    action_type="map_reduce_synthesis",
+                    metadata={
+                        "total_mapped": len(map_results),
+                        "successful": len(successful_outputs),
+                    },
+                )
+                return map_results + [reduce_result]
+
+            except Exception:
+                pass
+
         reduce_result = ActionResult(
             success=len(successful_outputs) > 0,
             output="\n\n---\n\n".join(successful_outputs),
             action_type="map_reduce_aggregate",
-            metadata={"total_mapped": len(map_results), "successful": len(successful_outputs)},
+            metadata={
+                "total_mapped": len(map_results),
+                "successful": len(successful_outputs),
+            },
         )
-
         return map_results + [reduce_result]
 
     async def _assign_agent(self, sub_task: SubTask) -> Agent | None:
@@ -401,33 +719,29 @@ class Orchestrator:
         original_agent_id = sub_task.assigned_agent_id
         role = sub_task.assigned_role
 
-        # Find a different agent
         agent_ids = self._role_agents.get(role, [])
         for agent_id in agent_ids:
             if agent_id != original_agent_id:
                 agent = self._agents.get(agent_id)
                 if agent and not agent.is_busy:
+                    await self._emit(
+                        f"  [REASSIGN] Trying another {role.value} agent..."
+                    )
                     sub_task.assigned_agent_id = agent.id
+                    if self._stream_callback:
+                        agent.set_stream_callback(self._stream_callback)
                     result = await agent.run_task(task)
                     agent.reset()
                     return result
 
         return None
 
-    async def _make_error_result(self, sub_task: SubTask) -> ActionResult:
-        """Create an error result for tasks that couldn't be assigned."""
-        return ActionResult(
-            success=False,
-            error=f"No agent available for role: {sub_task.assigned_role}",
-            action_type="assignment_error",
-        )
-
-    def _aggregate_results(
+    async def _aggregate_results(
         self,
         results: list[ActionResult],
         goal: str,
     ) -> ActionResult:
-        """Aggregate results from all sub-tasks into a final result."""
+        """Aggregate results, using LLM for intelligent synthesis."""
         successful = [r for r in results if r.success]
         failed = [r for r in results if not r.success]
 
@@ -435,6 +749,60 @@ class Orchestrator:
         all_errors = [r.error for r in failed if r.error]
 
         overall_success = len(successful) > len(failed)
+
+        if self._llm_router and all_outputs and len(all_outputs) > 1:
+            try:
+                from sovereign.llm.provider import Message, MessageRole
+
+                messages = [
+                    Message(
+                        role=MessageRole.SYSTEM,
+                        content=(
+                            "You are the Director of an AI agent team. "
+                            "Synthesize the results from your team's work "
+                            "into a clear, actionable final report. "
+                            "Highlight key findings and deliverables."
+                        ),
+                    ),
+                    Message(
+                        role=MessageRole.USER,
+                        content=(
+                            f"Original goal: {goal}\n\n"
+                            f"Results from {len(successful)} agents:\n\n"
+                            + "\n\n---\n\n".join(all_outputs)
+                            + (
+                                f"\n\n{len(failed)} tasks failed: "
+                                + "; ".join(all_errors)
+                                if all_errors
+                                else ""
+                            )
+                        ),
+                    ),
+                ]
+
+                response = await self._llm_router.generate(
+                    messages=messages,
+                    temperature=0.5,
+                    max_tokens=2048,
+                )
+
+                return ActionResult(
+                    success=overall_success,
+                    output=response.content,
+                    error="; ".join(all_errors) if all_errors else None,
+                    action_type="orchestration_complete",
+                    metadata={
+                        "goal": goal,
+                        "total_sub_tasks": len(results),
+                        "successful": len(successful),
+                        "failed": len(failed),
+                        "shared_memory_entries": len(
+                            self._shared_memory.entries
+                        ),
+                    },
+                )
+            except Exception:
+                pass
 
         return ActionResult(
             success=overall_success,
@@ -490,6 +858,27 @@ class Orchestrator:
         )
         return self._state
 
+    async def send_agent_message(
+        self,
+        from_agent_id: str,
+        to_agent_id: str,
+        content: str,
+        message_type: str = "info",
+    ) -> None:
+        """Send a message between agents via the message bus."""
+        message = AgentMessage(
+            sender=from_agent_id,
+            recipient=to_agent_id,
+            content=content,
+            message_type=message_type,
+        )
+        self._message_log.append(message)
+        self._state.messages_exchanged += 1
+
+        recipient = self._agents.get(to_agent_id)
+        if recipient:
+            await recipient.receive_message(message)
+
     async def broadcast_message(
         self,
         content: str,
@@ -503,4 +892,10 @@ class Orchestrator:
                 content=content,
                 message_type=message_type,
             )
+            self._message_log.append(message)
             await agent.receive_message(message)
+
+    async def _emit(self, message: str) -> None:
+        """Emit a streaming message."""
+        if self._stream_callback:
+            self._stream_callback(message)
