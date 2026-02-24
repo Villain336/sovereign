@@ -133,7 +133,45 @@ class SovereignConfig(BaseSettings):
 
 
 def load_config(**overrides: Any) -> SovereignConfig:
-    """Load configuration from environment and optional overrides."""
+    """Load configuration from environment and optional overrides.
+
+    Automatically detects API keys from environment variables and
+    configures default models.
+    """
     config = SovereignConfig(**overrides)
+
+    # Auto-configure Anthropic if API key is in environment
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if anthropic_key and "claude" not in config.llm.models:
+        config.llm.models["claude"] = LLMModelConfig(
+            provider=LLMProviderType.ANTHROPIC,
+            model_name="claude-sonnet-4-20250514",
+            api_key=anthropic_key,
+            max_tokens=4096,
+            temperature=0.7,
+            cost_per_1k_input=0.003,
+            cost_per_1k_output=0.015,
+            capabilities=["general", "coding", "analysis", "creative", "planning"],
+            max_context_window=200000,
+        )
+        config.llm.default_model = "claude"
+
+    # Auto-configure OpenAI if API key is in environment
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    if openai_key and "gpt4" not in config.llm.models:
+        config.llm.models["gpt4"] = LLMModelConfig(
+            provider=LLMProviderType.OPENAI,
+            model_name="gpt-4o",
+            api_key=openai_key,
+            max_tokens=4096,
+            temperature=0.7,
+            cost_per_1k_input=0.005,
+            cost_per_1k_output=0.015,
+            capabilities=["general", "coding", "analysis", "creative", "planning"],
+            max_context_window=128000,
+        )
+        if not anthropic_key:
+            config.llm.default_model = "gpt4"
+
     config.ensure_dirs()
     return config

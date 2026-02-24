@@ -52,8 +52,9 @@ class Executor:
     failures, retries, and safety validation.
     """
 
-    def __init__(self, config: SovereignConfig) -> None:
+    def __init__(self, config: SovereignConfig, llm_router: Any = None) -> None:
         self.config = config
+        self.llm_router = llm_router
         self._tool_registry: dict[str, Any] = {}  # Set by orchestrator
         self._safety_checker: Any = None  # Set by orchestrator
         self._traces: list[ExecutionTrace] = []
@@ -199,13 +200,67 @@ class Executor:
         context: dict[str, Any],
     ) -> ActionResult:
         """Execute an LLM reasoning step (thinking, analysis, synthesis)."""
-        # In production, this sends the step description + context to the LLM
-        # and captures its reasoning output
-        return ActionResult(
-            success=True,
-            output=f"Reasoning completed for: {step.description}",
-            action_type="llm_reasoning",
-        )
+        if not self.llm_router:
+            return ActionResult(
+                success=True,
+                output=f"Reasoning completed for: {step.description}",
+                action_type="llm_reasoning",
+            )
+
+        try:
+            from sovereign.llm.provider import Message, MessageRole
+
+            goal = context.get("goal", "")
+            history_summary = ""
+            exec_history = context.get("execution_history", [])
+            if exec_history:
+                recent = exec_history[-3:]
+                history_summary = "\n".join(
+                    f"- {h.get('action_type', 'unknown')}: "
+                    f"{'OK' if h.get('success') else 'FAILED'} - "
+                    f"{(h.get('output') or h.get('error', ''))[:100]}"
+                    for h in recent
+                )
+
+            messages = [
+                Message(
+                    role=MessageRole.SYSTEM,
+                    content=(
+                        "You are the reasoning engine of an autonomous AI agent "
+                        "called Sovereign. Perform the requested analysis/reasoning "
+                        "step thoroughly. Be specific and actionable in your output."
+                    ),
+                ),
+                Message(
+                    role=MessageRole.USER,
+                    content=(
+                        f"Overall goal: {goal}\n\n"
+                        f"Current task: {step.description}\n\n"
+                        f"Recent history:\n{history_summary or 'No prior steps'}\n\n"
+                        "Provide your analysis and reasoning:"
+                    ),
+                ),
+            ]
+
+            response = await self.llm_router.generate(
+                messages=messages,
+                temperature=0.7,
+                max_tokens=1024,
+            )
+
+            return ActionResult(
+                success=True,
+                output=response.content,
+                action_type="llm_reasoning",
+                cost_usd=response.cost_usd,
+            )
+
+        except Exception as exc:
+            return ActionResult(
+                success=False,
+                error=f"LLM reasoning failed: {exc}",
+                action_type="llm_reasoning",
+            )
 
     async def _execute_delegation(
         self,

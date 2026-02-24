@@ -57,8 +57,9 @@ class ReasoningEngine:
     It provides genuine self-awareness of progress, quality, and strategy.
     """
 
-    def __init__(self, config: SovereignConfig) -> None:
+    def __init__(self, config: SovereignConfig, llm_router: Any = None) -> None:
         self.config = config
+        self.llm_router = llm_router
         self._lessons: list[LessonLearned] = []
 
     async def reflect(
@@ -125,14 +126,15 @@ class ReasoningEngine:
         # Extract lessons
         lessons = self._extract_lessons(goal, last_result, last_success)
 
-        # Build reflection
-        reasoning = self._build_reasoning(
+        # Build reflection - use LLM if available for deeper reasoning
+        reasoning = await self._build_reasoning_with_llm(
             goal=goal,
             progress=progress,
             last_success=last_success,
             last_output=last_output,
             last_error=last_error,
             issues=issues,
+            plan=plan,
         )
 
         return Reflection(
@@ -294,6 +296,66 @@ class ReasoningEngine:
 
         return lessons
 
+    async def _build_reasoning_with_llm(
+        self,
+        goal: str,
+        progress: float,
+        last_success: bool,
+        last_output: str,
+        last_error: str | None,
+        issues: list[str],
+        plan: Plan,
+    ) -> str:
+        """Build a reasoning summary, using LLM for deeper analysis if available."""
+        # Build basic reasoning first
+        basic = self._build_reasoning(
+            goal, progress, last_success, last_output, last_error, issues
+        )
+
+        if not self.llm_router:
+            return basic
+
+        try:
+            from sovereign.llm.provider import Message, MessageRole
+
+            completed = [s.description for s in plan.steps if s.status.value == "completed"]
+            pending = [s.description for s in plan.steps if s.status.value == "pending"]
+
+            messages = [
+                Message(
+                    role=MessageRole.SYSTEM,
+                    content=(
+                        "You are the self-reflection module of an autonomous AI agent. "
+                        "Analyze the current execution state and provide a brief, "
+                        "insightful reflection (2-3 sentences) about progress, "
+                        "what's working, and what might need adjustment."
+                    ),
+                ),
+                Message(
+                    role=MessageRole.USER,
+                    content=(
+                        f"Goal: {goal}\n"
+                        f"Progress: {progress:.0%}\n"
+                        f"Last step: {'succeeded' if last_success else 'failed'}\n"
+                        f"Last output: {(last_output or last_error or 'none')[:300]}\n"
+                        f"Completed steps: {completed}\n"
+                        f"Remaining steps: {pending}\n"
+                        f"Issues: {issues}\n"
+                        "Provide your reflection:"
+                    ),
+                ),
+            ]
+
+            response = await self.llm_router.generate(
+                messages=messages,
+                temperature=0.5,
+                max_tokens=256,
+            )
+            return response.content
+
+        except Exception:
+            return basic
+
     def _build_reasoning(
         self,
         goal: str,
@@ -303,7 +365,7 @@ class ReasoningEngine:
         last_error: str | None,
         issues: list[str],
     ) -> str:
-        """Build a natural language reasoning summary."""
+        """Build a basic natural language reasoning summary."""
         parts = [f"Goal: {goal}", f"Progress: {progress:.0%}"]
 
         if last_success:

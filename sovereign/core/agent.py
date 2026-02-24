@@ -19,6 +19,7 @@ from sovereign.config import SovereignConfig
 from sovereign.core.executor import ActionResult, Executor
 from sovereign.core.planner import Plan, Planner, StepStatus
 from sovereign.core.reasoning import ReasoningEngine, Reflection
+from sovereign.llm.router import ModelRouter
 
 
 class AgentRole(str, Enum):
@@ -104,9 +105,12 @@ class Agent:
         self.state = AgentState.IDLE
         self.capabilities = capabilities or []
 
-        self.planner = Planner(config)
-        self.reasoning = ReasoningEngine(config)
-        self.executor = Executor(config)
+        # Initialize LLM router for real AI-powered planning/reasoning
+        self.llm_router = ModelRouter(config)
+
+        self.planner = Planner(config, llm_router=self.llm_router)
+        self.reasoning = ReasoningEngine(config, llm_router=self.llm_router)
+        self.executor = Executor(config, llm_router=self.llm_router)
 
         self._message_queue: asyncio.Queue[AgentMessage] = asyncio.Queue()
         self._current_task: TaskContext | None = None

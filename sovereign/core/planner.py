@@ -9,6 +9,7 @@ This planner goes beyond simple linear task decomposition. It:
 
 from __future__ import annotations
 
+import json
 import uuid
 from enum import Enum
 from typing import Any
@@ -146,8 +147,9 @@ class Planner:
     4. Support replanning when execution doesn't go as expected
     """
 
-    def __init__(self, config: SovereignConfig) -> None:
+    def __init__(self, config: SovereignConfig, llm_router: Any = None) -> None:
         self.config = config
+        self.llm_router = llm_router
         self._num_candidates = 3  # Generate 3 candidate plans
 
     async def create_plan(
@@ -279,26 +281,120 @@ class Planner:
     ) -> list[PlanStep]:
         """Generate plan steps using the LLM.
 
-        In production, this calls the LLM to decompose the goal into steps.
-        The LLM is prompted with the goal, context, available tools, and strategy.
+        Calls the LLM to decompose the goal into actionable steps with tool calls.
+        Falls back to a basic plan if no LLM is available.
         """
-        # This is where the LLM integration happens.
-        # The planner sends a structured prompt to the LLM asking it to
-        # decompose the goal into actionable steps with tool calls.
-        #
-        # For now, we create a structured decomposition prompt that will
-        # be sent to the LLM router. The response is parsed into PlanSteps.
-
         strategy = context.get("strategy", "direct")
 
-        # Build the planning prompt (used when LLM router is connected)
-        self._build_planning_prompt(goal, context, strategy)
+        # If we have an LLM router, use it for real planning
+        if self.llm_router:
+            try:
+                return await self._generate_steps_with_llm(goal, context, strategy)
+            except Exception:
+                pass  # Fall back to basic plan on LLM failure
 
-        # In the full implementation, this calls:
-        # response = await self.llm_router.generate(prompt, model_preference="planning")
-        # steps = self._parse_plan_response(response)
+        return self._generate_basic_steps(goal)
 
-        # For the framework, we create a placeholder that demonstrates the structure
+    async def _generate_steps_with_llm(
+        self,
+        goal: str,
+        context: dict[str, Any],
+        strategy: str,
+    ) -> list[PlanStep]:
+        """Generate steps by calling the LLM."""
+        from sovereign.llm.provider import Message, MessageRole
+
+        system_prompt = (
+            "You are a planning engine for an autonomous AI agent called Sovereign. "
+            "Given a goal, produce a JSON array of execution steps. "
+            "Each step is an object with these fields:\n"
+            '  "description": string - what to do\n'
+            '  "step_type": "tool_call" or "llm_reasoning"\n'
+            '  "tool_name": string or null - one of: web_search, browser, shell, '
+            "code_executor, file_read, file_write, file_list, api_request, "
+            "database_query, email_send (only if step_type is tool_call)\n"
+            '  "tool_args": object - arguments for the tool (only if step_type is tool_call)\n'
+            '  "risk_score": number 0.0-1.0\n'
+            '  "estimated_duration_seconds": number\n\n'
+            f"Strategy to use: {strategy}\n"
+            "Respond ONLY with a valid JSON array. No markdown, no explanation."
+        )
+
+        user_content = f"GOAL: {goal}"
+        if context.get("completed_steps"):
+            user_content += "\n\nAlready completed:\n"
+            for step in context["completed_steps"]:
+                user_content += f"  - {step.get('description', 'unknown')}\n"
+        if context.get("reflection"):
+            user_content += f"\nReflection: {context['reflection']}"
+
+        messages = [
+            Message(role=MessageRole.SYSTEM, content=system_prompt),
+            Message(role=MessageRole.USER, content=user_content),
+        ]
+
+        response = await self.llm_router.generate(
+            messages=messages,
+            temperature=0.7,
+            max_tokens=2048,
+        )
+
+        return self._parse_llm_plan(response.content, goal)
+
+    def _parse_llm_plan(self, content: str, goal: str) -> list[PlanStep]:
+        """Parse LLM JSON response into PlanStep objects."""
+        try:
+            text = content.strip()
+            # Handle markdown code blocks
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+                if text.endswith("```"):
+                    text = text[:-3]
+                text = text.strip()
+            if text.startswith("json"):
+                text = text[4:].strip()
+
+            raw_steps = json.loads(text)
+            if not isinstance(raw_steps, list):
+                if isinstance(raw_steps, dict) and "steps" in raw_steps:
+                    raw_steps = raw_steps["steps"]
+                else:
+                    return self._generate_basic_steps(goal)
+
+            steps: list[PlanStep] = []
+            for raw in raw_steps:
+                step_type_str = raw.get("step_type", "llm_reasoning")
+                try:
+                    step_type = StepType(step_type_str)
+                except ValueError:
+                    step_type = StepType.LLM_REASONING
+
+                step = PlanStep(
+                    description=raw.get("description", "Execute step"),
+                    step_type=step_type,
+                    tool_name=raw.get("tool_name"),
+                    tool_args=raw.get("tool_args", {}),
+                    risk_score=min(max(float(raw.get("risk_score", 0.2)), 0.0), 1.0),
+                    estimated_duration_seconds=float(
+                        raw.get("estimated_duration_seconds", 60)
+                    ),
+                )
+                steps.append(step)
+
+            if not steps:
+                return self._generate_basic_steps(goal)
+
+            # Set up sequential dependencies
+            for i in range(1, len(steps)):
+                steps[i].depends_on = [steps[i - 1].id]
+
+            return steps
+
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return self._generate_basic_steps(goal)
+
+    def _generate_basic_steps(self, goal: str) -> list[PlanStep]:
+        """Generate a basic fallback plan without LLM."""
         steps = [
             PlanStep(
                 description=f"Analyze and understand the goal: {goal}",
@@ -308,7 +404,7 @@ class Planner:
             ),
             PlanStep(
                 description=f"Execute primary action for: {goal}",
-                step_type=StepType.TOOL_CALL,
+                step_type=StepType.LLM_REASONING,
                 risk_score=0.3,
                 estimated_duration_seconds=120,
             ),
@@ -320,7 +416,6 @@ class Planner:
             ),
         ]
 
-        # Set up dependencies (sequential by default)
         for i in range(1, len(steps)):
             steps[i].depends_on = [steps[i - 1].id]
 
