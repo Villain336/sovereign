@@ -7,7 +7,6 @@ autonomous agent platform. Built with Click + Rich.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 import click
 from rich.console import Console
@@ -23,10 +22,8 @@ console = Console()
 
 def get_config(config_path: str | None = None) -> SovereignConfig:
     """Load configuration."""
-    overrides: dict[str, Any] = {}
-    if config_path:
-        overrides["config_path"] = config_path
-    return load_config(overrides)
+    # config_path reserved for future YAML config support
+    return load_config()
 
 
 @click.group()
