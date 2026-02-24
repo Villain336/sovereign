@@ -234,6 +234,16 @@ def tools(config: str | None) -> None:
         ("payment_link", "business", "Create Stripe payment links", "Med"),
         ("website_generate", "business", "Generate websites from description", "Low"),
         ("website_deploy", "business", "Deploy websites to the web", "Med"),
+        # Design & Deploy tools
+        ("ai_design", "design", "Claude-powered Tailwind CSS page generation", "Low"),
+        ("site_multipage", "design", "Multi-page static site generator", "Low"),
+        ("scaffold_react", "design", "React + Vite project scaffolding", "Low"),
+        ("deploy_site", "deploy", "Deploy to Netlify / Vercel", "Med"),
+        ("screenshot", "design", "Headless Chrome screenshot capture", "Low"),
+        # Browser automation tools
+        ("browser_navigate", "browser", "Navigate URLs with headless Chrome", "Low"),
+        ("browser_interact", "browser", "Interact with web page elements", "Med"),
+        ("browser_scrape", "browser", "Scrape structured data from pages", "Low"),
     ]
 
     for name, category, desc, risk in tool_info:
@@ -482,6 +492,96 @@ def version() -> None:
     """Show the Sovereign version."""
     console.print(f"[bold cyan]Sovereign[/bold cyan] v{__version__}")
     console.print("[dim]Autonomous AI Agent Platform for Business Automation[/dim]")
+
+
+@main.command()
+@click.option("--host", "-h", default="0.0.0.0", help="Bind host")
+@click.option("--port", "-p", default=8000, type=int, help="Bind port")
+def serve(host: str, port: int) -> None:
+    """Start the Sovereign Web UI (FastAPI server).
+
+    Launches a local web server with the dashboard, REST API,
+    task queue management, and design engine.
+
+    Examples:
+        sovereign serve
+        sovereign serve --port 9000
+    """
+    try:
+        import uvicorn  # type: ignore[import-untyped]
+    except ImportError:
+        console.print(
+            "[red]uvicorn is required: pip install uvicorn[/red]"
+        )
+        return
+
+    from sovereign.web.api import create_app
+
+    console.print(
+        Panel(
+            f"[bold cyan]Sovereign Web UI[/bold cyan]\n\n"
+            f"Dashboard: [green]http://{host}:{port}/dashboard[/green]\n"
+            f"API Docs:  [green]http://{host}:{port}/docs[/green]\n"
+            f"Health:    [green]http://{host}:{port}/health[/green]",
+            title="Starting Server",
+            border_style="cyan",
+        )
+    )
+
+    app = create_app()
+    uvicorn.run(app, host=host, port=port)
+
+
+@main.command(name="queue")
+@click.option("--status", "-s", default=None, help="Filter by status")
+@click.option("--limit", "-l", default=20, type=int, help="Max items")
+def queue_list(status: str | None, limit: int) -> None:
+    """Show the persistent task queue."""
+    from sovereign.core.task_queue import TaskQueue, TaskStatus
+
+    tq = TaskQueue()
+    task_status = TaskStatus(status) if status else None
+    tasks = tq.list_tasks(status=task_status, limit=limit)
+
+    if not tasks:
+        console.print("[dim]No tasks in queue.[/dim]")
+        return
+
+    table = Table(title="Task Queue", show_header=True)
+    table.add_column("ID", style="dim", width=8)
+    table.add_column("Goal", style="white")
+    table.add_column("Status", width=12)
+    table.add_column("Priority", width=8, justify="center")
+    table.add_column("Created", style="dim", width=20)
+
+    status_style = {
+        "pending": "yellow",
+        "in_progress": "cyan",
+        "completed": "green",
+        "failed": "red",
+        "cancelled": "dim",
+    }
+
+    for t in tasks:
+        style = status_style.get(t.status.value, "white")
+        table.add_row(
+            t.id[:8],
+            t.goal[:60],
+            f"[{style}]{t.status.value}[/{style}]",
+            str(t.priority),
+            t.created_at[:19] if t.created_at else "",
+        )
+
+    console.print(table)
+
+    stats = tq.get_stats()
+    console.print(
+        f"\n[dim]Total: {stats.get('total', 0)} | "
+        f"Pending: {stats.get('pending', 0)} | "
+        f"Running: {stats.get('in_progress', 0)} | "
+        f"Done: {stats.get('completed', 0)} | "
+        f"Failed: {stats.get('failed', 0)}[/dim]"
+    )
 
 
 if __name__ == "__main__":
