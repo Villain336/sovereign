@@ -287,6 +287,97 @@ def create_app() -> Any:
         return DASHBOARD_HTML
 
     # ---------------------------------------------------------------
+    # Inbound Webhooks (Telegram, Slack, generic)
+    # ---------------------------------------------------------------
+
+    from sovereign.channels.inbound import (
+        create_generic_webhook_handler,
+        create_slack_webhook_handler,
+        create_telegram_webhook_handler,
+    )
+
+    telegram_router = create_telegram_webhook_handler(config, task_queue)
+    slack_router = create_slack_webhook_handler(config, task_queue)
+    generic_router = create_generic_webhook_handler(config, task_queue)
+
+    app.include_router(telegram_router, prefix="/webhooks")
+    app.include_router(slack_router, prefix="/webhooks")
+    app.include_router(generic_router, prefix="/webhooks")
+
+    # ---------------------------------------------------------------
+    # Notifications endpoint
+    # ---------------------------------------------------------------
+
+    @app.get("/notifications")
+    async def list_notifications(
+        limit: int = 20,
+        unread_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        from sovereign.core.notifier import Notifier
+        notifier = Notifier(config)
+        if unread_only:
+            return notifier.get_unread()
+        return notifier.get_recent(count=limit)
+
+    # ---------------------------------------------------------------
+    # Skills endpoints
+    # ---------------------------------------------------------------
+
+    @app.get("/skills")
+    async def list_skills_api() -> list[dict[str, Any]]:
+        from sovereign.core.skills import SkillRegistry
+        registry = SkillRegistry()
+        skills = registry.list_skills()
+        return [
+            {
+                "name": s.name,
+                "description": s.description,
+                "tags": s.tags,
+                "steps": len(s.steps),
+            }
+            for s in skills
+        ]
+
+    # ---------------------------------------------------------------
+    # Memory endpoints
+    # ---------------------------------------------------------------
+
+    @app.get("/memory/{memory_type}")
+    async def list_memories_api(
+        memory_type: str = "semantic",
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        from sovereign.memory.persistent import PersistentMemory
+        mem = PersistentMemory()
+        return mem.list_memories(memory_type=memory_type, limit=limit)
+
+    @app.get("/memory/{memory_type}/search")
+    async def search_memories_api(
+        memory_type: str,
+        q: str = "",
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        from sovereign.memory.persistent import PersistentMemory
+        mem = PersistentMemory()
+        return mem.search(q, memory_types=[memory_type], max_results=limit)
+
+    # ---------------------------------------------------------------
+    # Daemon status endpoint
+    # ---------------------------------------------------------------
+
+    @app.get("/daemon/status")
+    async def daemon_status() -> dict[str, Any]:
+        from sovereign.core.daemon import HeartbeatDaemon
+        running = HeartbeatDaemon.is_running(config.data_dir)
+        state = HeartbeatDaemon.get_state(config.data_dir) if running else {}
+        pid = HeartbeatDaemon.get_pid(config.data_dir) if running else None
+        return {
+            "running": running,
+            "pid": pid,
+            **state,
+        }
+
+    # ---------------------------------------------------------------
     # Helpers
     # ---------------------------------------------------------------
 

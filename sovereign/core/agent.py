@@ -184,6 +184,27 @@ class Agent:
         self.tool_registry.register(WebsiteGeneratorTool())
         self.tool_registry.register(WebsiteDeployTool())
 
+        # Design & Deploy tools (Phase 5)
+        from sovereign.tools.browser_auto import (
+            BrowserInteractTool,
+            BrowserNavigateTool,
+            BrowserScrapeTool,
+        )
+        from sovereign.tools.deploy_tool import DeployTool, ScreenshotTool
+        from sovereign.tools.design_engine import AIDesignTool
+        from sovereign.tools.site_generator import MultiPageSiteTool, ReactScaffoldTool
+
+        design_tool = AIDesignTool()
+        design_tool.set_llm_router(self.llm_router)
+        self.tool_registry.register(design_tool)
+        self.tool_registry.register(MultiPageSiteTool())
+        self.tool_registry.register(ReactScaffoldTool())
+        self.tool_registry.register(DeployTool())
+        self.tool_registry.register(ScreenshotTool())
+        self.tool_registry.register(BrowserNavigateTool())
+        self.tool_registry.register(BrowserInteractTool())
+        self.tool_registry.register(BrowserScrapeTool())
+
     def set_stream_callback(self, callback: Any) -> None:
         """Set a callback for streaming agent output in real-time."""
         self._stream_callback = callback

@@ -584,5 +584,227 @@ def queue_list(status: str | None, limit: int) -> None:
     )
 
 
+@main.command()
+@click.argument("action", type=click.Choice(["start", "stop", "status"]))
+@click.option("--detach", "-d", is_flag=True, help="Run daemon in background")
+@click.option("--interval", "-i", default=None, type=int, help="Heartbeat interval in seconds")
+def daemon(action: str, detach: bool, interval: int | None) -> None:
+    """Manage the Sovereign heartbeat daemon.
+
+    The daemon runs 24/7, checks for pending tasks in the queue,
+    executes them autonomously, and sends notifications when done.
+
+    Examples:
+        sovereign daemon start           # Start in foreground
+        sovereign daemon start --detach  # Start in background
+        sovereign daemon stop            # Stop the daemon
+        sovereign daemon status          # Check if running
+    """
+    from sovereign.core.daemon import HeartbeatDaemon, daemonize
+
+    cfg = get_config()
+
+    if action == "start":
+        if HeartbeatDaemon.is_running(cfg.data_dir):
+            pid = HeartbeatDaemon.get_pid(cfg.data_dir)
+            console.print(f"[yellow]Daemon already running (PID {pid})[/yellow]")
+            return
+
+        console.print(
+            Panel(
+                f"[bold cyan]Starting Sovereign Daemon[/bold cyan]\n\n"
+                f"Heartbeat interval: {interval or cfg.scheduler.heartbeat_interval_seconds}s\n"
+                f"Mode: {'background' if detach else 'foreground'}\n"
+                f"PID file: {cfg.data_dir}/daemon.pid\n"
+                f"Log file: {cfg.data_dir}/daemon.log",
+                title="Daemon",
+                border_style="cyan",
+            )
+        )
+
+        if detach:
+            daemonize()
+        else:
+            d = HeartbeatDaemon(config=cfg, interval_seconds=interval)
+            d.start()
+
+    elif action == "stop":
+        d = HeartbeatDaemon(config=cfg)
+        if d.stop():
+            console.print("[green]Daemon stopped.[/green]")
+        else:
+            console.print("[yellow]Daemon is not running.[/yellow]")
+
+    elif action == "status":
+        if HeartbeatDaemon.is_running(cfg.data_dir):
+            state = HeartbeatDaemon.get_state(cfg.data_dir)
+            pid = HeartbeatDaemon.get_pid(cfg.data_dir)
+            console.print(
+                Panel(
+                    f"[green]Daemon is RUNNING[/green]\n\n"
+                    f"PID: {pid}\n"
+                    f"Started: {state.get('started_at', '?')}\n"
+                    f"Heartbeats: {state.get('heartbeat_count', 0)}\n"
+                    f"Tasks processed: {state.get('tasks_processed', 0)}\n"
+                    f"Interval: {state.get('interval_seconds', '?')}s\n"
+                    f"Last heartbeat: {state.get('last_heartbeat', '?')}",
+                    title="Daemon Status",
+                    border_style="green",
+                )
+            )
+        else:
+            console.print("[dim]Daemon is not running.[/dim]")
+
+
+@main.command(name="skills")
+@click.option("--tag", "-t", default=None, help="Filter by tag")
+@click.option("--search", "-s", default=None, help="Search skills")
+def skills_list(tag: str | None, search: str | None) -> None:
+    """List available skills (portable YAML workflows).
+
+    Skills are reusable workflows that can be shared and extended.
+    Drop .yaml files into ~/.sovereign/skills/ to add your own.
+
+    Examples:
+        sovereign skills
+        sovereign skills --tag business
+        sovereign skills --search "landing page"
+    """
+    from sovereign.core.skills import SkillRegistry
+
+    registry = SkillRegistry()
+
+    if search:
+        skill_list = registry.search(search)
+    elif tag:
+        skill_list = registry.list_skills(tags=[tag])
+    else:
+        skill_list = registry.list_skills()
+
+    if not skill_list:
+        console.print("[dim]No skills found.[/dim]")
+        return
+
+    table = Table(title="Available Skills", show_header=True)
+    table.add_column("Name", style="cyan", width=20)
+    table.add_column("Description", style="white")
+    table.add_column("Tags", style="yellow", width=20)
+    table.add_column("Steps", width=6, justify="center")
+
+    for skill in skill_list:
+        table.add_row(
+            skill.name,
+            skill.description[:60],
+            ", ".join(skill.tags),
+            str(len(skill.steps)),
+        )
+
+    console.print(table)
+    console.print(
+        "\n[dim]Skills directory: ~/.sovereign/skills/[/dim]\n"
+        "[dim]Add custom skills by dropping .yaml files there.[/dim]"
+    )
+
+
+@main.command(name="memory")
+@click.option("--type", "-t", "mem_type", default="semantic", help="Memory type")
+@click.option("--search", "-s", default=None, help="Search memories")
+@click.option("--limit", "-l", default=20, type=int, help="Max results")
+def memory_cmd(mem_type: str, search: str | None, limit: int) -> None:
+    """Browse and search persistent memory.
+
+    Memories are stored as Markdown files in ~/.sovereign/memory/
+    and survive restarts. Types: episodic, semantic, procedures.
+
+    Examples:
+        sovereign memory
+        sovereign memory --type episodic
+        sovereign memory --search "competitor analysis"
+    """
+    from sovereign.memory.persistent import PersistentMemory
+
+    mem = PersistentMemory()
+
+    if search:
+        results = mem.search(search, memory_types=[mem_type], max_results=limit)
+        if not results:
+            console.print(f"[dim]No memories found for '{search}'[/dim]")
+            return
+
+        table = Table(title=f"Memory Search: '{search}'", show_header=True)
+        table.add_column("Type", style="yellow", width=12)
+        table.add_column("Title", style="cyan")
+        table.add_column("Score", width=6, justify="right")
+        table.add_column("Preview", style="dim")
+
+        for r in results:
+            table.add_row(
+                r["type"],
+                r["header"].get("title", "Untitled")[:40],
+                f"{r['score']:.2f}",
+                r["content"][:60].replace("\n", " "),
+            )
+
+        console.print(table)
+    else:
+        memories = mem.list_memories(memory_type=mem_type, limit=limit)
+        if not memories:
+            console.print(f"[dim]No {mem_type} memories found.[/dim]")
+            return
+
+        table = Table(title=f"{mem_type.title()} Memories", show_header=True)
+        table.add_column("File", style="dim", width=30)
+        table.add_column("Title", style="cyan")
+        table.add_column("Preview", style="white")
+
+        for m in memories:
+            table.add_row(
+                m["filename"][:30],
+                m["header"].get("title", "Untitled")[:40],
+                m["preview"][:50].replace("\n", " "),
+            )
+
+        console.print(table)
+
+    console.print(
+        f"\n[dim]Memory directory: ~/.sovereign/memory/{mem_type}/[/dim]"
+    )
+
+
+@main.command(name="notifications")
+@click.option("--limit", "-l", default=20, type=int, help="Max notifications")
+@click.option("--unread", "-u", is_flag=True, help="Show only unread")
+def notifications_cmd(limit: int, unread: bool) -> None:
+    """Show recent notifications from daemon and task completions.
+
+    Examples:
+        sovereign notifications
+        sovereign notifications --unread
+    """
+    from sovereign.core.notifier import Notifier
+
+    cfg = get_config()
+    notifier = Notifier(cfg)
+
+    if unread:
+        items = notifier.get_unread()
+    else:
+        items = notifier.get_recent(count=limit)
+
+    if not items:
+        console.print("[dim]No notifications.[/dim]")
+        return
+
+    for item in reversed(items):
+        level = item.get("level", "info")
+        color = {"info": "cyan", "error": "red", "warning": "yellow"}.get(level, "white")
+        read_marker = "" if item.get("read") else " [bold yellow]*[/bold yellow]"
+        console.print(
+            f"[{color}]{item.get('title', 'Notification')}[/{color}]{read_marker}\n"
+            f"  [dim]{item.get('timestamp', '')[:19]}[/dim]\n"
+            f"  {item.get('body', '')[:120]}\n"
+        )
+
+
 if __name__ == "__main__":
     main()
