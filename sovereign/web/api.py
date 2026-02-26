@@ -2,22 +2,27 @@
 
 Provides a REST API for managing agents, tasks, the design engine,
 and viewing system status. This is the backend for the Sovereign Web UI.
+Includes WebSocket streaming for real-time agent output and API key auth.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from typing import Any
 
 from sovereign.config import SovereignConfig, load_config
 from sovereign.core.task_queue import PersistentTask, TaskQueue, TaskStatus
 
+# Global set of active WebSocket connections for broadcasting
+_ws_connections: set[Any] = set()
+
 
 def create_app() -> Any:
     """Create and configure the FastAPI application."""
     try:
-        from fastapi import FastAPI, HTTPException
+        from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import HTMLResponse
         from pydantic import BaseModel
@@ -29,20 +34,72 @@ def create_app() -> Any:
     app = FastAPI(
         title="Sovereign API",
         description="REST API for the Sovereign Autonomous Agent Platform",
-        version="0.2.0",
-    )
-
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        version="0.3.0",
     )
 
     # Initialize shared state
     config = load_config()
     task_queue = TaskQueue()
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=config.web.cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # ---------------------------------------------------------------
+    # API Key Authentication
+    # ---------------------------------------------------------------
+
+    async def verify_api_key(request: Request) -> None:
+        """Verify API key from Authorization header or query param."""
+        api_key = config.web.api_key
+        if not api_key:
+            # No API key configured — allow all requests
+            return
+
+        # Check Authorization header: "Bearer <key>"
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+            if token == api_key:
+                return
+
+        # Check X-API-Key header
+        x_api_key = request.headers.get("X-API-Key", "")
+        if x_api_key == api_key:
+            return
+
+        # Check query parameter
+        key_param = request.query_params.get("api_key", "")
+        if key_param == api_key:
+            return
+
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing API key. Provide via Authorization: Bearer <key>, X-API-Key header, or ?api_key= param.",
+        )
+
+    # Apply auth to all routes except health, root, and dashboard
+    public_paths = {"/", "/health", "/docs", "/openapi.json", "/redoc"}
+
+    @app.middleware("http")
+    async def auth_middleware(request: Request, call_next: Any) -> Any:
+        path = request.url.path
+        if path in public_paths or path.startswith("/dashboard"):
+            return await call_next(request)
+        if config.web.api_key:
+            try:
+                await verify_api_key(request)
+            except HTTPException as exc:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=exc.status_code,
+                    content={"detail": exc.detail},
+                )
+        return await call_next(request)
 
     # ---------------------------------------------------------------
     # Request/Response models
@@ -378,6 +435,88 @@ def create_app() -> Any:
         }
 
     # ---------------------------------------------------------------
+    # WebSocket streaming endpoint
+    # ---------------------------------------------------------------
+
+    @app.websocket("/ws")
+    async def websocket_endpoint(websocket: WebSocket) -> None:
+        """WebSocket for real-time agent output streaming.
+
+        Connect to ws://host:port/ws?api_key=<key> to receive live events.
+        Send JSON messages to submit goals: {"action": "run", "goal": "..."}
+        """
+        # Authenticate WebSocket connections
+        if config.web.api_key:
+            key = websocket.query_params.get("api_key", "")
+            if key != config.web.api_key:
+                await websocket.close(code=4001, reason="Invalid API key")
+                return
+
+        await websocket.accept()
+        _ws_connections.add(websocket)
+
+        try:
+            await websocket.send_json({
+                "type": "connected",
+                "message": "Connected to Sovereign streaming API",
+            })
+
+            while True:
+                data = await websocket.receive_text()
+                try:
+                    msg = json.loads(data)
+                except (json.JSONDecodeError, TypeError):
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "Invalid JSON",
+                    })
+                    continue
+
+                action = msg.get("action", "")
+                if action == "run":
+                    goal = msg.get("goal", "")
+                    if not goal:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "Goal is required",
+                        })
+                        continue
+
+                    # Create task and run with streaming
+                    task = PersistentTask(
+                        goal=goal,
+                        priority=msg.get("priority", 5),
+                        budget_usd=msg.get("budget_usd"),
+                    )
+                    task_queue.add_task(task)
+
+                    await websocket.send_json({
+                        "type": "task_created",
+                        "task_id": task.id,
+                        "goal": goal,
+                    })
+
+                    # Run in background with streaming callback
+                    asyncio.create_task(
+                        _execute_task_streaming(
+                            task.id, config, task_queue, websocket,
+                        ),
+                    )
+
+                elif action == "ping":
+                    await websocket.send_json({"type": "pong"})
+                else:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Unknown action: {action}",
+                    })
+
+        except WebSocketDisconnect:
+            pass
+        finally:
+            _ws_connections.discard(websocket)
+
+    # ---------------------------------------------------------------
     # Helpers
     # ---------------------------------------------------------------
 
@@ -442,3 +581,87 @@ async def _execute_task(
             )
     except Exception as e:
         queue.update_status(task_id, TaskStatus.FAILED, error=str(e))
+
+
+async def _execute_task_streaming(
+    task_id: str,
+    config: SovereignConfig,
+    queue: TaskQueue,
+    websocket: Any,
+) -> None:
+    """Execute a task with real-time WebSocket streaming."""
+    queue.update_status(task_id, TaskStatus.IN_PROGRESS)
+
+    task = queue.get_task(task_id)
+    if task is None:
+        return
+
+    async def _stream_callback(message: str) -> None:
+        """Send agent output to WebSocket client."""
+        try:
+            await websocket.send_json({
+                "type": "agent_output",
+                "task_id": task_id,
+                "message": message,
+            })
+        except Exception:
+            pass  # Client may have disconnected
+
+    try:
+        from sovereign.core.agent import Agent, AgentRole, TaskContext
+
+        agent = Agent(
+            config=config,
+            role=AgentRole(task.agent_role) if task.agent_role != "general" else AgentRole.GENERAL,
+        )
+        agent.set_stream_callback(_stream_callback)
+
+        task_ctx = TaskContext(
+            goal=task.goal,
+            priority=task.priority,
+            budget_usd=task.budget_usd,
+        )
+
+        result = await agent.run_task(task_ctx)
+
+        if result.success:
+            queue.update_status(
+                task_id,
+                TaskStatus.COMPLETED,
+                output=result.output or "Completed",
+            )
+            await _stream_callback("[COMPLETE] Task finished successfully")
+            try:
+                await websocket.send_json({
+                    "type": "task_complete",
+                    "task_id": task_id,
+                    "success": True,
+                    "output": (result.output or "")[:2000],
+                })
+            except Exception:
+                pass
+        else:
+            queue.update_status(
+                task_id,
+                TaskStatus.FAILED,
+                error=result.error or "Unknown error",
+            )
+            try:
+                await websocket.send_json({
+                    "type": "task_complete",
+                    "task_id": task_id,
+                    "success": False,
+                    "error": result.error or "Unknown error",
+                })
+            except Exception:
+                pass
+    except Exception as e:
+        queue.update_status(task_id, TaskStatus.FAILED, error=str(e))
+        try:
+            await websocket.send_json({
+                "type": "task_error",
+                "task_id": task_id,
+                "error": str(e),
+            })
+        except Exception:
+            pass

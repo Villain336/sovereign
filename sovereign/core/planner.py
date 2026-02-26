@@ -310,17 +310,34 @@ class Planner:
             "Each step is an object with these fields:\n"
             '  "description": string - what to do\n'
             '  "step_type": "tool_call" or "llm_reasoning"\n'
-            '  "tool_name": string or null - one of: web_search, browser, shell, '
-            "code_executor, file_read, file_write, file_list, api_request, "
-            "database_query, email_send (only if step_type is tool_call)\n"
+            '  "tool_name": string or null - name of tool (only if step_type is tool_call)\n'
             '  "tool_args": object - arguments for the tool (only if step_type is tool_call)\n'
             '  "risk_score": number 0.0-1.0\n'
             '  "estimated_duration_seconds": number\n\n'
+            "Available tools:\n"
+            "  CORE: web_search (query), browser (url), shell (command), "
+            "code_executor (code, language), file_read (path), file_write (path, content), "
+            "file_list (directory), api_request (url, method, headers, body), "
+            "database_query (query, database), email_send (to, subject, body)\n"
+            "  BROWSER: browser_navigate (url, extract), browser_interact (url, actions), "
+            "browser_scrape (url, selectors)\n"
+            "  BUSINESS: lead_scrape (query, num_results), crm_add_lead (name, email, company), "
+            "crm_update_stage (lead_id, stage), crm_list_leads (stage), "
+            "crm_log_interaction (lead_id, type, notes), invoice_generate (client, items, amount), "
+            "payment_link (amount, description)\n"
+            "  COMMUNICATION: sms_send (to, body), voice_call (to, message), "
+            "whatsapp_send (to, body)\n"
+            "  DESIGN: ai_design (page_type, business_name, palette), "
+            "multi_page_site (pages, business_name), react_scaffold (project_name, pages)\n"
+            "  DEPLOY: deploy (source_dir, platform), screenshot (url)\n"
+            "  WEBSITE: website_generate (business_name, template), website_deploy (source_dir)\n\n"
             f"Strategy to use: {strategy}\n"
             "Respond ONLY with a valid JSON array. No markdown, no explanation."
         )
 
         user_content = f"GOAL: {goal}"
+        if context.get("memory_context"):
+            user_content += f"\n\nRelevant past experience:\n{context['memory_context']}"
         if context.get("completed_steps"):
             user_content += "\n\nAlready completed:\n"
             for step in context["completed_steps"]:

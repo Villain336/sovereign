@@ -19,7 +19,9 @@ from sovereign.config import SovereignConfig
 from sovereign.core.executor import ActionResult, Executor
 from sovereign.core.planner import Plan, Planner, StepStatus
 from sovereign.core.reasoning import ReasoningEngine, Reflection
+from sovereign.core.skills import SkillExecutor, SkillRegistry
 from sovereign.llm.router import ModelRouter
+from sovereign.memory.persistent import PersistentMemory
 from sovereign.tools.registry import ToolRegistry
 
 
@@ -120,6 +122,13 @@ class Agent:
             {name: tool for name, tool in self.tool_registry._tools.items()}
         )
 
+        # Persistent memory for cross-session learning
+        self.memory = PersistentMemory()
+
+        # Skill registry for reusable workflows
+        self.skill_registry = SkillRegistry(config)
+        self.skill_executor = SkillExecutor(config)
+
         self._message_queue: asyncio.Queue[AgentMessage] = asyncio.Queue()
         self._current_task: TaskContext | None = None
         self._current_plan: Plan | None = None
@@ -133,7 +142,8 @@ class Agent:
         from sovereign.tools.api_client import APIClientTool
         from sovereign.tools.browser import BrowserTool
         from sovereign.tools.code_executor import CodeExecutorTool
-        from sovereign.tools.email_client import EmailSendTool
+        from sovereign.tools.database import DatabaseTool
+        from sovereign.tools.email_client import EmailReceiveTool, EmailSendTool
         from sovereign.tools.file_manager import FileListTool, FileReadTool, FileWriteTool
         from sovereign.tools.shell import ShellTool
         from sovereign.tools.web_search import WebSearchTool
@@ -146,9 +156,16 @@ class Agent:
         self.tool_registry.register(BrowserTool())
         self.tool_registry.register(APIClientTool())
         self.tool_registry.register(CodeExecutorTool())
+        self.tool_registry.register(DatabaseTool())
         self.tool_registry.register(EmailSendTool(
             smtp_host=self.config.channels.email_smtp_host,
             smtp_port=self.config.channels.email_smtp_port,
+            username=self.config.channels.email_username,
+            password=self.config.channels.email_password,
+        ))
+        self.tool_registry.register(EmailReceiveTool(
+            imap_host=self.config.channels.email_imap_host,
+            imap_port=self.config.channels.email_imap_port,
             username=self.config.channels.email_username,
             password=self.config.channels.email_password,
         ))
@@ -227,11 +244,19 @@ class Agent:
         self.state = AgentState.PLANNING
 
         try:
-            # Phase 1: Create initial plan
+            # Phase 0: Recall relevant memories from past tasks
+            memory_context = self.memory.recall(task.goal, max_results=5)
+            if memory_context:
+                await self._emit("[MEMORY] Recalled relevant past experiences")
+
+            # Phase 1: Create initial plan (with memory context)
+            context = self._build_context(task)
+            if memory_context:
+                context["memory_context"] = memory_context
             plan = await self.planner.create_plan(
                 goal=task.goal,
                 constraints=task.constraints,
-                context=self._build_context(task),
+                context=context,
                 agent_role=self.role,
             )
             self._current_plan = plan
@@ -312,6 +337,24 @@ class Agent:
             # Compile final result
             self.state = AgentState.COMPLETED
             final_output = self._compile_results()
+
+            # Save episode to persistent memory for future recall
+            lessons = []
+            for r in self._reflections:
+                lessons.extend(r.lessons_learned)
+            steps_desc = [
+                f"{r.action_type}: {'OK' if r.success else 'FAIL'}"
+                for r in self._execution_history
+            ]
+            self.memory.store_episode(
+                goal=task.goal,
+                outcome=final_output[:500],
+                success=True,
+                steps=steps_desc,
+                lessons=lessons or ["Task completed successfully"],
+            )
+            await self._emit("[MEMORY] Episode saved for future learning")
+
             return ActionResult(
                 success=True,
                 output=final_output,
@@ -325,6 +368,13 @@ class Agent:
 
         except Exception as e:
             self.state = AgentState.FAILED
+            # Save failure episode too
+            self.memory.store_episode(
+                goal=task.goal,
+                outcome=str(e),
+                success=False,
+                lessons=[f"Task failed with error: {str(e)[:200]}"],
+            )
             return ActionResult(
                 success=False,
                 output="",

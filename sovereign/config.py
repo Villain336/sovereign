@@ -98,9 +98,20 @@ class ChannelConfig(BaseModel):
     telegram_bot_token: str = ""
     email_smtp_host: str = ""
     email_smtp_port: int = 587
+    email_imap_host: str = ""
+    email_imap_port: int = 993
     email_username: str = ""
     email_password: str = ""
     webhook_secret: str = ""
+
+
+class WebConfig(BaseModel):
+    """Configuration for the web API."""
+
+    api_key: str = ""
+    host: str = "0.0.0.0"
+    port: int = 8000
+    cors_origins: list[str] = Field(default_factory=lambda: ["*"])
 
 
 class SovereignConfig(BaseSettings):
@@ -117,6 +128,7 @@ class SovereignConfig(BaseSettings):
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     channels: ChannelConfig = Field(default_factory=ChannelConfig)
+    web: WebConfig = Field(default_factory=WebConfig)
 
     def ensure_dirs(self) -> None:
         """Create necessary directories."""

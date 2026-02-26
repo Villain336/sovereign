@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from sovereign.config import SovereignConfig
 from sovereign.core.planner import Plan
+from sovereign.memory.persistent import PersistentMemory
 
 
 class Reflection(BaseModel):
@@ -61,6 +62,7 @@ class ReasoningEngine:
         self.config = config
         self.llm_router = llm_router
         self._lessons: list[LessonLearned] = []
+        self._memory = PersistentMemory()
 
     async def reflect(
         self,
@@ -293,6 +295,26 @@ class ReasoningEngine:
             )
             lessons.append(lesson)
             self._lessons.append(lesson)
+
+            # Persist lesson to disk so it survives restarts
+            self._memory.store(
+                content=f"Lesson from task '{goal}': {lesson.lesson}",
+                memory_type="semantic",
+                tags=["lesson", "error_recovery"],
+                importance=0.7,
+                title=f"Lesson: {goal[:50]}",
+            )
+        elif success:
+            output = getattr(last_result, "output", "")
+            if output:
+                lesson = LessonLearned(
+                    context=goal,
+                    lesson=f"Successful approach produced: {str(output)[:100]}",
+                    applicable_to=["success_pattern"],
+                    confidence=0.7,
+                )
+                lessons.append(lesson)
+                self._lessons.append(lesson)
 
         return lessons
 
