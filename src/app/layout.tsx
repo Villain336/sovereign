@@ -4,13 +4,14 @@ import { CartProvider } from '@/context/CartContext';
 import Navigation from '@/components/layout/Navigation';
 import CartSidebar from '@/components/layout/CartSidebar';
 import Footer from '@/components/layout/Footer';
+import AnnouncementBar from '@/components/layout/AnnouncementBar';
 import ProgressBar from '@/components/ui/ProgressBar';
 import BackToTop from '@/components/ui/BackToTop';
 
 export const metadata: Metadata = {
   title: 'SOVEREIGN — The Future of Essential Clothing',
   description:
-    'Precision-engineered garments for the modern human. No logos. No noise. Just essential clothing at accessible prices.',
+    'Precision-engineered garments for the modern human. No logos. No noise. Just essential clothing at accessible prices. Free shipping over $100.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -24,6 +25,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body>
         <CartProvider>
+          <AnnouncementBar />
           <ProgressBar />
           <Navigation />
           <CartSidebar />

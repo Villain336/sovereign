@@ -45,7 +45,7 @@ export default function HeroBlock() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 1, delay: 1.2 }}
-            className="font-mono text-[11px] tracking-[0.2em] text-sovereign-graphite mt-8 max-w-sm leading-relaxed"
+            className="font-mono text-[11px] tracking-[0.2em] text-sovereign-graphite mt-10 max-w-sm leading-[2.2]"
           >
             PRECISION-ENGINEERED GARMENTS FOR THE MODERN HUMAN.
             NO LOGOS. NO NOISE. JUST ESSENTIAL CLOTHING.
@@ -55,7 +55,7 @@ export default function HeroBlock() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.8, delay: 1.5 }}
-            className="mt-10 flex gap-4"
+            className="mt-12 flex gap-5"
           >
             <Link href="/collections">
               <Button variant="filled" size="lg">EXPLORE</Button>

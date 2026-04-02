@@ -3,6 +3,7 @@
 import { motion } from 'framer-motion';
 import Link from 'next/link';
 import { products } from '@/lib/products';
+import SceneLoader from '@/components/three/SceneLoader';
 import { collections } from '@/lib/collections';
 import GradientPlaceholder from '@/components/ui/GradientPlaceholder';
 import Badge from '@/components/ui/Badge';
@@ -13,7 +14,12 @@ export default function DiscoveryGrid() {
   const newArrivals = products.filter((p) => p.tags.includes('new'));
 
   return (
-    <section className="w-full max-w-7xl mx-auto px-6 md:px-16 py-20 md:py-32">
+    <section className="w-full max-w-7xl mx-auto px-6 md:px-16 py-24 md:py-40 relative overflow-hidden">
+      {/* Background chrome shape */}
+      <div className="absolute -right-32 top-1/3 w-[400px] h-[500px] opacity-8 pointer-events-none hidden lg:block">
+        <SceneLoader variant="cube" />
+      </div>
+
       {/* Section label */}
       <ScrollReveal>
         <span className="font-mono text-[10px] tracking-[0.5em] text-sovereign-graphite">
@@ -22,7 +28,7 @@ export default function DiscoveryGrid() {
       </ScrollReveal>
 
       {/* Main discovery grid */}
-      <div className="mt-10 grid grid-cols-4 md:grid-cols-12 gap-3 md:gap-4">
+      <div className="relative z-10 mt-12 grid grid-cols-4 md:grid-cols-12 gap-4 md:gap-5">
         {/* Large featured product — 6 cols */}
         <ScrollReveal className="col-span-4 md:col-span-6 md:row-span-2">
           <Link href={`/product/${featured[0]?.id}`} className="group block h-full">
