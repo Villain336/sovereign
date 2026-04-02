@@ -17,7 +17,19 @@ export const EARTH_COLORS: Record<string, string> = {
 
 export const NAV_LINKS = [
   { href: '/collections', label: 'COLLECTIONS' },
-  { href: '/collections/essentials', label: 'ESSENTIALS' },
-  { href: '/collections/outerwear', label: 'OUTERWEAR' },
+  { href: '/lookbook', label: 'LOOKBOOK' },
+  { href: '/drops', label: 'DROPS' },
   { href: '/about', label: 'ABOUT' },
+] as const;
+
+export const CATEGORY_LINKS = [
+  { href: '/collections/tshirts', label: 'T-SHIRTS' },
+  { href: '/collections/hoodies', label: 'HOODIES' },
+  { href: '/collections/pants', label: 'PANTS' },
+  { href: '/collections/shorts', label: 'SHORTS' },
+  { href: '/collections/outerwear', label: 'OUTERWEAR' },
+  { href: '/collections/essentials', label: 'ESSENTIALS' },
+  { href: '/collections/outdoors', label: 'OUTDOORS' },
+  { href: '/collections/accessories', label: 'ACCESSORIES' },
+  { href: '/collections/tools', label: 'TOOLS' },
 ] as const;

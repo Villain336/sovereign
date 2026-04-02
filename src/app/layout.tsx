@@ -4,6 +4,8 @@ import { CartProvider } from '@/context/CartContext';
 import Navigation from '@/components/layout/Navigation';
 import CartSidebar from '@/components/layout/CartSidebar';
 import Footer from '@/components/layout/Footer';
+import ProgressBar from '@/components/ui/ProgressBar';
+import BackToTop from '@/components/ui/BackToTop';
 
 export const metadata: Metadata = {
   title: 'SOVEREIGN — The Future of Essential Clothing',
@@ -22,10 +24,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body>
         <CartProvider>
+          <ProgressBar />
           <Navigation />
           <CartSidebar />
           <main>{children}</main>
           <Footer />
+          <BackToTop />
         </CartProvider>
       </body>
     </html>

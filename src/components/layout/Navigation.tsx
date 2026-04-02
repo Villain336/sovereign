@@ -21,7 +21,18 @@ export default function Navigation() {
       </Link>
 
       {/* Right side controls */}
-      <div className="fixed top-6 right-6 z-50 flex items-center gap-6 nav-blend">
+      <div className="fixed top-6 right-6 z-50 flex items-center gap-5 nav-blend">
+        {/* Search */}
+        <Link
+          href="/search"
+          className="font-mono text-xs tracking-[0.2em] hover:opacity-70 transition-opacity"
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" className="stroke-current">
+            <circle cx="5.5" cy="5.5" r="4.5" strokeWidth="1.2" />
+            <path d="M9 9L13 13" strokeWidth="1.2" />
+          </svg>
+        </Link>
+
         {/* Cart */}
         <button
           onClick={toggleCart}
@@ -45,22 +56,12 @@ export default function Navigation() {
           className="flex flex-col gap-[5px] hover:opacity-70 transition-opacity p-1"
           aria-label="Toggle menu"
         >
-          <motion.span
-            animate={isMenuOpen ? { rotate: 45, y: 7 } : { rotate: 0, y: 0 }}
-            className="block w-6 h-px bg-current"
-          />
-          <motion.span
-            animate={isMenuOpen ? { opacity: 0 } : { opacity: 1 }}
-            className="block w-6 h-px bg-current"
-          />
-          <motion.span
-            animate={isMenuOpen ? { rotate: -45, y: -7 } : { rotate: 0, y: 0 }}
-            className="block w-6 h-px bg-current"
-          />
+          <motion.span animate={isMenuOpen ? { rotate: 45, y: 7 } : { rotate: 0, y: 0 }} className="block w-6 h-px bg-current" />
+          <motion.span animate={isMenuOpen ? { opacity: 0 } : { opacity: 1 }} className="block w-6 h-px bg-current" />
+          <motion.span animate={isMenuOpen ? { rotate: -45, y: -7 } : { rotate: 0, y: 0 }} className="block w-6 h-px bg-current" />
         </button>
       </div>
 
-      {/* Full screen nav overlay */}
       <AnimatePresence>
         {isMenuOpen && <NavOverlay onClose={() => setIsMenuOpen(false)} />}
       </AnimatePresence>

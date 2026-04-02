@@ -1,9 +1,11 @@
 import { notFound } from 'next/navigation';
-import { collections, getCollection } from '@/lib/collections';
+import { collections, getCollection, COLLECTION_CHROME_SHAPES } from '@/lib/collections';
 import { getProductsByCollection } from '@/lib/products';
 import ProductCard from '@/components/product/ProductCard';
 import ScrollReveal from '@/components/ui/ScrollReveal';
 import Divider from '@/components/ui/Divider';
+import Breadcrumbs from '@/components/ui/Breadcrumbs';
+import SceneLoader from '@/components/three/SceneLoader';
 
 export function generateStaticParams() {
   return collections.map((c) => ({ slug: c.slug }));
@@ -15,16 +17,44 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
   return { title: collection ? `${collection.name} — SOVEREIGN` : 'Collection — SOVEREIGN' };
 }
 
+type SceneVariant = 'hero' | 'accent' | 'minimal' | 'knot' | 'icosahedron' | 'pyramid' | 'cube' | 'coin' | 'star' | 'menorah' | 'human' | 'ring';
+const SHAPE_VARIANT_MAP: Record<string, SceneVariant> = {
+  sphere: 'minimal',
+  torus: 'accent',
+  blob: 'accent',
+  knot: 'knot',
+  icosahedron: 'icosahedron',
+  pyramid: 'pyramid',
+  cube: 'cube',
+  coin: 'coin',
+  starOfDavid: 'star',
+  menorah: 'menorah',
+  human: 'human',
+  ring: 'ring',
+};
+
 export default async function CollectionPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const collection = getCollection(slug);
   if (!collection) notFound();
 
   const products = getProductsByCollection(slug);
+  const chromeShape = COLLECTION_CHROME_SHAPES[slug] || 'sphere';
+  const sceneVariant = SHAPE_VARIANT_MAP[chromeShape] || 'minimal';
 
   return (
-    <div className="pt-32 pb-20 md:pb-32">
+    <div className="pt-32 pb-20 md:pb-32 relative">
+      {/* Chrome shape accent — top right */}
+      <div className="absolute top-24 right-0 w-48 h-48 md:w-64 md:h-64 opacity-20 pointer-events-none">
+        <SceneLoader variant={sceneVariant} />
+      </div>
+
       <div className="max-w-7xl mx-auto px-6 md:px-16">
+        <Breadcrumbs items={[
+          { label: 'COLLECTIONS', href: '/collections' },
+          { label: collection.name },
+        ]} />
+
         <ScrollReveal>
           <span className="font-mono text-[10px] tracking-[0.5em] text-sovereign-chrome">
             COLLECTION

@@ -5,6 +5,7 @@ import { useCart } from '@/hooks/useCart';
 import { getProduct } from '@/lib/products';
 import { EARTH_COLORS } from '@/lib/constants';
 import Button from '@/components/ui/Button';
+import Link from 'next/link';
 
 export default function CartSidebar() {
   const { items, isOpen, closeCart, removeItem, updateQuantity } = useCart();
@@ -120,9 +121,11 @@ export default function CartSidebar() {
                   <span className="font-mono text-xs tracking-[0.2em]">TOTAL</span>
                   <span className="font-mono text-sm tracking-[0.1em]">${total}</span>
                 </div>
-                <Button variant="filled" size="lg" className="w-full">
-                  CHECKOUT
-                </Button>
+                <Link href="/checkout" onClick={closeCart}>
+                  <Button variant="filled" size="lg" className="w-full">
+                    CHECKOUT
+                  </Button>
+                </Link>
               </div>
             )}
           </motion.div>

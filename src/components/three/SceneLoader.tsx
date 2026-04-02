@@ -12,7 +12,7 @@ const FloatingScene = dynamic(() => import('./FloatingScene'), {
 });
 
 interface SceneLoaderProps {
-  variant?: 'hero' | 'accent' | 'minimal';
+  variant?: 'hero' | 'accent' | 'minimal' | 'knot' | 'icosahedron' | 'pyramid' | 'cube' | 'coin' | 'star' | 'menorah' | 'human' | 'ring';
   className?: string;
 }
 
