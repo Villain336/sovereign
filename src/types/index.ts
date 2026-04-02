@@ -40,3 +40,26 @@ export type CartAction =
   | { type: 'TOGGLE_CART' }
   | { type: 'CLOSE_CART' }
   | { type: 'CLEAR_CART' };
+
+export type ChromeShape = 'sphere' | 'torus' | 'blob' | 'knot' | 'icosahedron' | 'pyramid' | 'cube' | 'coin' | 'starOfDavid' | 'menorah' | 'human' | 'ring';
+
+export interface Look {
+  id: string;
+  title: string;
+  description: string;
+  products: string[];
+  gradient: [string, string];
+  chromeShape: ChromeShape;
+}
+
+export interface Drop {
+  id: string;
+  name: string;
+  description: string;
+  date: string;
+  products: string[];
+  isLive: boolean;
+  gradient: [string, string];
+}
+
+export type CheckoutStep = 'information' | 'shipping' | 'payment' | 'confirmation';

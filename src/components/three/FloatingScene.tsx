@@ -6,9 +6,18 @@ import { Suspense } from 'react';
 import ChromeSphere from './ChromeSphere';
 import ChromeTorus from './ChromeTorus';
 import ChromeBlob from './ChromeBlob';
+import ChromeKnot from './ChromeKnot';
+import ChromeIcosahedron from './ChromeIcosahedron';
+import ChromePyramid from './ChromePyramid';
+import ChromeCube from './ChromeCube';
+import ChromeCoin from './ChromeCoin';
+import ChromeStarOfDavid from './ChromeStarOfDavid';
+import ChromeMenorah from './ChromeMenorah';
+import ChromeHuman from './ChromeHuman';
+import ChromeRing from './ChromeRing';
 
 interface FloatingSceneProps {
-  variant?: 'hero' | 'accent' | 'minimal';
+  variant?: 'hero' | 'accent' | 'minimal' | 'knot' | 'icosahedron' | 'pyramid' | 'cube' | 'coin' | 'star' | 'menorah' | 'human' | 'ring';
   className?: string;
 }
 
@@ -16,7 +25,7 @@ export default function FloatingScene({ variant = 'hero', className = '' }: Floa
   return (
     <div className={`w-full h-full ${className}`}>
       <Canvas
-        camera={{ position: [0, 0, 6], fov: 45 }}
+        camera={{ position: [0, 0, 5], fov: 45 }}
         style={{ background: 'transparent' }}
         gl={{ alpha: true, antialias: true }}
       >
@@ -40,9 +49,16 @@ export default function FloatingScene({ variant = 'hero', className = '' }: Floa
             </>
           )}
 
-          {variant === 'minimal' && (
-            <ChromeSphere position={[0, 0, 0]} scale={0.6} speed={0.4} />
-          )}
+          {variant === 'minimal' && <ChromeSphere position={[0, 0, 0]} scale={0.6} speed={0.4} />}
+          {variant === 'knot' && <ChromeKnot position={[0, 0, 0]} scale={0.6} speed={0.5} />}
+          {variant === 'icosahedron' && <ChromeIcosahedron position={[0, 0, 0]} scale={0.7} speed={0.5} />}
+          {variant === 'pyramid' && <ChromePyramid position={[0, 0, 0]} scale={0.7} speed={0.4} />}
+          {variant === 'cube' && <ChromeCube position={[0, 0, 0]} scale={0.6} speed={0.5} />}
+          {variant === 'coin' && <ChromeCoin position={[0, 0, 0]} scale={0.6} speed={0.8} />}
+          {variant === 'star' && <ChromeStarOfDavid position={[0, 0, 0]} scale={0.5} speed={0.4} />}
+          {variant === 'menorah' && <ChromeMenorah position={[0, 0, 0]} scale={0.5} speed={0.4} />}
+          {variant === 'human' && <ChromeHuman position={[0, -0.3, 0]} scale={0.6} speed={0.3} />}
+          {variant === 'ring' && <ChromeRing position={[0, 0, 0]} scale={0.5} speed={1.5} />}
         </Suspense>
       </Canvas>
     </div>
