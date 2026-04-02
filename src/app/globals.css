@@ -1,0 +1,79 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-sovereign-white: #ffffff;
+  --color-sovereign-snow: #fafafa;
+  --color-sovereign-pearl: #f5f5f5;
+  --color-sovereign-silver: #e5e5e5;
+  --color-sovereign-chrome: #c0c0c0;
+  --color-sovereign-graphite: #8a8a8a;
+  --color-sovereign-carbon: #1a1a1a;
+  --color-sovereign-black: #000000;
+
+  --color-earth-sand: #c2b280;
+  --color-earth-olive: #708238;
+  --color-earth-slate: #6e7b8b;
+  --color-earth-charcoal: #36454f;
+  --color-earth-cream: #fffdd0;
+  --color-earth-clay: #b66a50;
+  --color-earth-stone: #928e85;
+  --color-earth-moss: #8a9a5b;
+
+  --font-display: 'Space Grotesk', system-ui, sans-serif;
+  --font-mono: 'Space Mono', ui-monospace, monospace;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--color-sovereign-white);
+  color: var(--color-sovereign-carbon);
+  font-family: var(--font-display);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+::selection {
+  background: var(--color-sovereign-carbon);
+  color: var(--color-sovereign-white);
+}
+
+/* Chrome gradient utilities */
+.chrome-gradient {
+  background: linear-gradient(135deg, #e8e8e8 0%, #f5f5f5 25%, #c0c0c0 50%, #d4d4d4 75%, #e8e8e8 100%);
+}
+
+.chrome-text {
+  background: linear-gradient(135deg, #c0c0c0, #f0f0f0, #a0a0a0, #d0d0d0);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.chrome-border {
+  border-image: linear-gradient(135deg, #e8e8e8, #c0c0c0, #e8e8e8) 1;
+}
+
+/* Mix blend mode nav */
+.nav-blend {
+  mix-blend-mode: difference;
+  color: white;
+}
+
+/* Hide scrollbar but keep functionality */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
